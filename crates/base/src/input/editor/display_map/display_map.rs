@@ -14,7 +14,7 @@ use super::folding::FoldRange;
 pub use super::text_wrapper::WrappingIndent;
 use super::text_wrapper::{LineItem, WrapDisplayPoint};
 use super::wrap_map::WrapMap;
-use super::{BufferPoint, DisplayPoint};
+use super::{BufferPoint, DisplayPoint, Filler};
 use crate::input::Point as TreeSitterPoint;
 use crate::input::display_map::WrapPoint;
 use crate::input::rope_ext::RopeExt as _;
@@ -172,12 +172,15 @@ impl DisplayMap {
 
     // ==================== Text and Layout Updates ====================
 
-    /// Adjust folds and candidates for a text edit before updating the wrap map.
+    /// Adjust folds, candidates and filler for a text edit before updating the wrap map.
     ///
     /// Must be called with the OLD text (before replacement) and the edit range/new_text
     /// so we can compute which old lines were affected.
     pub fn adjust_folds_for_edit(&mut self, old_text: &Rope, range: &Range<usize>, new_text: &str) {
-        if self.fold_map.folded_ranges().is_empty() && self.fold_map.fold_candidates().is_empty() {
+        if self.fold_map.folded_ranges().is_empty()
+            && self.fold_map.fold_candidates().is_empty()
+            && self.fillers().is_empty()
+        {
             return;
         }
 
@@ -188,6 +191,11 @@ impl DisplayMap {
         let new_lines_in_range = new_text.chars().filter(|c| *c == '\n').count();
         let line_delta = new_lines_in_range as isize - old_lines_in_range as isize;
 
+        self.wrap_map.wrapper_mut().adjust_fillers_for_edit(
+            edit_start_line,
+            edit_end_line,
+            line_delta,
+        );
         self.fold_map
             .adjust_folds_for_edit(edit_start_line, edit_end_line, line_delta);
     }
@@ -264,6 +272,55 @@ impl DisplayMap {
     pub fn set_text(&mut self, text: &Rope, cx: &mut App) {
         self.wrap_map.set_text(text, cx);
         self.rebuild_fold_projection();
+    }
+
+    /// Filler as last set and moved by edits, sorted by line.
+    pub(crate) fn fillers(&self) -> &[Filler] {
+        self.wrap_map.wrapper().fillers()
+    }
+
+    /// Replaces every filler. See [`Filler`].
+    pub(crate) fn set_fillers(&mut self, fillers: Vec<Filler>) {
+        self.wrap_map.wrapper_mut().set_fillers(fillers);
+        self.rebuild_fold_projection();
+    }
+
+    /// Rows of text per buffer line at the current wrap width, filler not counted.
+    pub(crate) fn text_rows_per_line(&self) -> Vec<usize> {
+        let lines = self.wrap_map.wrapper().iter_lines();
+        lines.map(|line| line.lines_len()).collect()
+    }
+
+    /// Rows of filler below a buffer line's text that are shown. A fold
+    /// hides the filler below its first line with the lines it hides.
+    pub(crate) fn visible_filler_below(&self, line: usize) -> usize {
+        let filler = self.line(line).map_or(0, |item| item.filler_below);
+        if self.is_folded_at(line) { 0 } else { filler }
+    }
+
+    /// The text row nearest to a filler row, as a display row. `None` when
+    /// `display_row` holds text or lies past the last row.
+    pub(crate) fn nearest_text_row(&self, display_row: usize) -> Option<usize> {
+        let wrap_row = self.fold_map.display_row_to_wrap_row(display_row)?;
+        let run = self.wrap_map.wrapper().filler_run(wrap_row)?;
+        let in_upper_half = (wrap_row - run.start) * 2 < run.len();
+        let up = run.start > 0 && (run.end == self.wrap_row_count() || in_upper_half);
+        let text_row = if up { run.start - 1 } else { run.end };
+        self.fold_map.wrap_row_to_display_row(text_row)
+    }
+
+    /// The wrap row a caret moving to `wrap_row` rests on. A caret never
+    /// rests on filler, so it carries on past it in the direction it moved.
+    pub(crate) fn skip_filler(&self, wrap_row: usize, down: bool) -> usize {
+        match self.wrap_map.wrapper().filler_run(wrap_row) {
+            Some(run) if run.start == 0 || (down && run.end < self.wrap_row_count()) => run.end,
+            Some(run) => run.start - 1,
+            None => wrap_row,
+        }
+    }
+
+    pub(crate) fn rewraps(&self) -> usize {
+        self.wrap_map.wrapper().rewraps()
     }
 
     // ==================== Internal Helpers ====================

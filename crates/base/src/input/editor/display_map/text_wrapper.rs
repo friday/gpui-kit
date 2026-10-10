@@ -1,3 +1,4 @@
+use super::Filler;
 use super::inline_line::InputLine;
 use gpui::Half;
 use std::borrow::Cow;
@@ -102,6 +103,19 @@ fn measured_wrap_boundaries(
     result
 }
 
+/// Sums sorted filler on the same line and drops filler with no rows.
+fn merge_fillers(mut fillers: Vec<Filler>) -> Vec<Filler> {
+    fillers.dedup_by(|f, kept| {
+        let same = f.line == kept.line;
+        if same {
+            kept.rows += f.rows;
+        }
+        same
+    });
+    fillers.retain(|f| f.rows > 0);
+    fillers
+}
+
 /// A line with soft wrapped lines info.
 #[derive(Debug, Clone)]
 pub(crate) struct LineItem {
@@ -116,6 +130,8 @@ pub(crate) struct LineItem {
     ///
     /// Not contains the line end `\n`.
     pub(crate) wrapped_lines: SmallVec<[Range<usize>; 1]>,
+    /// Rows of filler below the text, which is the filler above the next line.
+    pub(crate) filler_below: usize,
 }
 
 impl LineItem {
@@ -178,7 +194,7 @@ impl sum_tree::Item for LineItem {
     fn summary(&self, _: &()) -> LineSummary {
         LineSummary {
             buffer_rows: 1,
-            wrap_rows: self.lines_len(),
+            wrap_rows: self.lines_len() + self.filler_below,
             bytes: self.len(),
             max_line_len: self.len(),
             longest_row: 0,
@@ -228,6 +244,11 @@ pub(crate) struct TextWrapper {
     pub(crate) lines: SumTree<LineItem>,
 
     inline_metrics: Rc<[(Range<usize>, Pixels)]>,
+    /// Sorted by line, one per line. Filler above line 0 has no line item to
+    /// hang below, so every wrap row is offset by it instead.
+    fillers: Vec<Filler>,
+    /// Counts the passes that wrapped every line again.
+    rewraps: usize,
     _initialized: bool,
 }
 
@@ -242,6 +263,8 @@ impl TextWrapper {
             wrapping_indent: WrappingIndent::default(),
             lines: SumTree::new(&()),
             inline_metrics: Rc::from([]),
+            fillers: Vec::new(),
+            rewraps: 0,
             _initialized: false,
         }
     }
@@ -260,7 +283,7 @@ impl TextWrapper {
     /// Get the total number of lines including wrapped lines.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.lines.summary().wrap_rows
+        self.rows_above_first_line() + self.lines.summary().wrap_rows
     }
 
     /// Get the total number of buffer lines.
@@ -294,20 +317,21 @@ impl TextWrapper {
     pub(crate) fn buffer_line_to_first_wrap_row(&self, row: usize) -> usize {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        cursor.start().1.0
+        self.rows_above_first_line() + cursor.start().1.0
     }
 
     /// Wrap row range of buffer line `row`.
     pub(crate) fn buffer_line_to_wrap_row_range(&self, row: usize) -> Range<usize> {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let start = cursor.start().1.0;
+        let start = self.rows_above_first_line() + cursor.start().1.0;
         let len = cursor.item().map(|l| l.lines_len()).unwrap_or(0);
         start..start + len
     }
 
     /// Buffer line containing wrap row `wrap_row`, clamped to the last line.
     pub(crate) fn wrap_row_to_buffer_line(&self, wrap_row: usize) -> usize {
+        let wrap_row = wrap_row.saturating_sub(self.rows_above_first_line());
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
         cursor.seek(&WrapRows(wrap_row), Bias::Right);
         match cursor.item() {
@@ -539,6 +563,7 @@ impl TextWrapper {
 
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
         let wrap_width = self.wrap_width;
+        let line_count = changed_text.lines_len();
 
         // line not contains `\n`.
         for row in new_start_row..=new_end_row {
@@ -595,6 +620,7 @@ impl TextWrapper {
                 len: line.len(),
                 indent: indent_chars,
                 wrapped_lines,
+                filler_below: self.filler_below(row, row + 1 == line_count),
             });
         }
 
@@ -602,7 +628,23 @@ impl TextWrapper {
             self.lines = SumTree::from_iter(new_lines, &());
         } else {
             let mut cursor = self.lines.cursor::<BufferRows>(&());
-            let mut new_tree = cursor.slice(&BufferRows(start_row), Bias::Right);
+            // An edit can move filler onto its first line, which hangs below the line before.
+            let kept = if self.fillers.is_empty() {
+                start_row
+            } else {
+                start_row.saturating_sub(1)
+            };
+            let mut new_tree = cursor.slice(&BufferRows(kept), Bias::Right);
+            if let Some(item) = cursor.item().filter(|_| kept < start_row) {
+                let filler_below = self.filler_above(start_row);
+                new_tree.push(
+                    LineItem {
+                        filler_below,
+                        ..item.clone()
+                    },
+                    &(),
+                );
+            }
             // Skip the replaced rows
             cursor.seek_forward(&BufferRows(end_row + 1), Bias::Right);
             new_tree.extend(new_lines, &());
@@ -619,6 +661,7 @@ impl TextWrapper {
     ///
     /// If the `text` is the same as the current text, do nothing.
     fn update_all(&mut self, text: &Rope, cx: &mut App) {
+        self.rewraps += 1;
         self.update(text, &(0..text.len()), &text, cx);
     }
 
@@ -646,7 +689,7 @@ impl TextWrapper {
         // Seek to buffer row
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let wrapped_row = cursor.start().1.0;
+        let wrapped_row = self.rows_above_first_line() + cursor.start().1.0;
         let Some(line) = cursor.item() else {
             return WrapDisplayPoint::new(wrapped_row, 0, 0);
         };
@@ -676,9 +719,10 @@ impl TextWrapper {
     ///
     /// Panics if the `point.row` is out of bounds.
     pub(crate) fn display_point_to_offset(&self, point: WrapDisplayPoint) -> usize {
-        // Seek to wrap row `point.row`
+        // Seek to wrap row `point.row`. Filler above the first line resolves to its start.
+        let point_row = point.row.saturating_sub(self.rows_above_first_line());
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
-        cursor.seek(&WrapRows(point.row), Bias::Right);
+        cursor.seek(&WrapRows(point_row), Bias::Right);
         let Some(line) = cursor.item() else {
             return self.text.len();
         };
@@ -686,7 +730,7 @@ impl TextWrapper {
         let row = cursor.start().1.0;
 
         let line_start = self.text.line_start_offset(row);
-        let local_row = point.row.saturating_sub(wrapped_row);
+        let local_row = point_row.saturating_sub(wrapped_row);
         if let Some(range) = line.wrapped_lines.get(local_row) {
             line_start + (range.start + point.column).min(range.end)
         } else {
@@ -703,6 +747,82 @@ impl TextWrapper {
     pub(crate) fn point_to_display_point(&self, point: TreeSitterPoint) -> WrapDisplayPoint {
         let offset = self.text.point_to_offset(point);
         self.offset_to_display_point(offset)
+    }
+
+    pub(crate) fn rewraps(&self) -> usize {
+        self.rewraps
+    }
+
+    pub(crate) fn fillers(&self) -> &[Filler] {
+        &self.fillers
+    }
+
+    fn rows_above_first_line(&self) -> usize {
+        self.fillers
+            .first()
+            .filter(|f| f.line == 0)
+            .map_or(0, |f| f.rows)
+    }
+
+    fn filler_above(&self, line: usize) -> usize {
+        self.fillers
+            .binary_search_by_key(&line, |f| f.line)
+            .map_or(0, |ix| self.fillers[ix].rows)
+    }
+
+    /// The filler above the next line, or for the last line all filler past it.
+    fn filler_below(&self, line: usize, is_last: bool) -> usize {
+        if !is_last {
+            return self.filler_above(line + 1);
+        }
+        let past = self.fillers.partition_point(|f| f.line <= line);
+        self.fillers[past..].iter().map(|f| f.rows).sum()
+    }
+
+    /// Replaces every filler. A line past the end stands for the end.
+    pub(crate) fn set_fillers(&mut self, mut fillers: Vec<Filler>) {
+        fillers.sort_by_key(|f| f.line);
+        self.fillers = merge_fillers(fillers);
+        let count = self.lines_count();
+        let items: Vec<LineItem> = self
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(row, item)| LineItem {
+                filler_below: self.filler_below(row, row + 1 == count),
+                ..item.clone()
+            })
+            .collect();
+        self.lines = SumTree::from_iter(items, &());
+    }
+
+    /// Moves filler with the lines of an edit that replaced old lines
+    /// `start..=end` and changed the line count by `delta`. Filler above a
+    /// line the edit removed lands above the line the edit ends on.
+    pub(crate) fn adjust_fillers_for_edit(&mut self, start: usize, end: usize, delta: isize) {
+        let landing = end.saturating_add_signed(delta);
+        let mut fillers = std::mem::take(&mut self.fillers);
+        for f in &mut fillers {
+            if f.line > end {
+                f.line = f.line.saturating_add_signed(delta);
+            } else if f.line > start {
+                f.line = landing;
+            }
+        }
+        self.fillers = merge_fillers(fillers);
+    }
+
+    /// The run of filler rows `wrap_row` is in, or `None` on a row of text.
+    pub(crate) fn filler_run(&self, wrap_row: usize) -> Option<Range<usize>> {
+        let top = self.rows_above_first_line();
+        if wrap_row < top {
+            return Some(0..top);
+        }
+        let mut cursor = self.lines.cursor::<WrapRows>(&());
+        cursor.seek(&WrapRows(wrap_row - top), Bias::Right);
+        let line = cursor.item()?;
+        let text_end = top + cursor.start().0 + line.lines_len();
+        (wrap_row >= text_end).then(|| text_end..text_end + line.filler_below)
     }
 }
 
@@ -749,6 +869,8 @@ pub(crate) struct LineLayout {
     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
     /// can skip the glyph walk for the common case of a line without highlights.
     has_background: bool,
+    /// Rows of filler painted below the text, counted in [`Self::size`].
+    pub(crate) filler_below: usize,
 }
 
 impl LineLayout {
@@ -761,6 +883,7 @@ impl LineLayout {
             whitespace_chars: Vec::new(),
             whitespace_indicators: None,
             has_background: false,
+            filler_below: 0,
         }
     }
 
@@ -1013,7 +1136,10 @@ impl LineLayout {
             .map(|(ix, line)| line.width + self.line_indent(ix))
             .max()
             .unwrap_or(self.longest_width);
-        size(width, self.wrapped_lines.len() * line_height)
+        size(
+            width,
+            (self.wrapped_lines.len() + self.filler_below) * line_height,
+        )
     }
 
     /// Paint only the glyph background quads of this line.
@@ -1511,16 +1637,19 @@ mod tests {
                     len: 2,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..2],
+                    filler_below: 0,
                 },
                 LineItem {
                     len: 4,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..2, 2..4],
+                    filler_below: 0,
                 },
                 LineItem {
                     len: 1,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..1],
+                    filler_below: 0,
                 },
             ],
             &(),
@@ -1682,11 +1811,13 @@ mod tests {
                     len: Rope::from("first line").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..10],
+                    filler_below: 0,
                 },
                 LineItem {
                     len: Rope::from("this one wraps").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..9, 9..14],
+                    filler_below: 0,
                 },
             ],
             &(),
@@ -1738,24 +1869,28 @@ mod tests {
                     len: Rope::from("Hello, 世界!\r").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..15],
+                    filler_below: 0,
                 },
                 // range: 16..36
                 LineItem {
                     len: Rope::from("This is second line.\n").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..10, 10..20],
+                    filler_below: 0,
                 },
                 // range: 37..56
                 LineItem {
                     len: Rope::from("This is third line.\n").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..9, 9..15, 15..20],
+                    filler_below: 0,
                 },
                 // range: 57..79
                 LineItem {
                     len: Rope::from("这里是第 4 行。").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..22],
+                    filler_below: 0,
                 },
             ],
             &(),
@@ -1925,5 +2060,95 @@ mod tests {
             line_layout.position_for_index(6, &last_layout, false),
             Some(point(px(20.), px(20.))),
         )
+    }
+
+    /// Wraps a line after every byte, so `bb` takes two rows.
+    fn wrap_every_byte(line: &str, _: Pixels, _: usize) -> Vec<Boundary> {
+        (1..line.len())
+            .map(|ix| Boundary { ix, next_indent: 0 })
+            .collect()
+    }
+
+    fn wrapped(text: &str, fillers: Vec<Filler>) -> TextWrapper {
+        let text = Rope::from(text);
+        let mut wrapper = TextWrapper::new(test_font(), px(14.), Some(px(1.)));
+        wrapper._update(&text, &(0..text.len()), &text, &mut wrap_every_byte);
+        wrapper.set_fillers(fillers);
+        wrapper
+    }
+
+    fn text_rows(wrapper: &TextWrapper) -> Vec<Range<usize>> {
+        let lines = 0..wrapper.lines_count();
+        lines
+            .map(|line| wrapper.buffer_line_to_wrap_row_range(line))
+            .collect()
+    }
+
+    /// Replaces `range` and moves the filler the way `DisplayMap` does.
+    fn edit(wrapper: &mut TextWrapper, range: Range<usize>, new_text: &str) {
+        let old = wrapper.text().clone();
+        let start = old.offset_to_point(range.start).row;
+        let end = old.offset_to_point(range.end).row;
+        let delta = new_text.matches('\n').count() as isize - (end - start) as isize;
+        wrapper.adjust_fillers_for_edit(start, end, delta);
+        let mut text = old.clone();
+        text.replace(range.clone(), new_text);
+        wrapper._update(&text, &range, &Rope::from(new_text), &mut wrap_every_byte);
+    }
+
+    #[test]
+    fn filler_rows_stand_above_their_line() {
+        let fillers = vec![Filler::new(2, 2), Filler::new(0, 1), Filler::new(9, 1)];
+        let wrapper = wrapped("a\nbb\nc", fillers);
+        // Filler, a, b, b, filler, filler, c, filler.
+        assert_eq!(wrapper.len(), 8);
+        assert_eq!(text_rows(&wrapper), [1..2, 2..4, 6..7]);
+        assert_eq!(wrapper.filler_run(0), Some(0..1));
+        assert_eq!(wrapper.filler_run(5), Some(4..6));
+        assert_eq!(wrapper.filler_run(7), Some(7..8));
+        assert_eq!(wrapper.filler_run(3), None);
+        assert_eq!(wrapper.wrap_row_to_buffer_line(0), 0);
+        assert_eq!(wrapper.offset_to_display_point(5).row, 6);
+        assert_eq!(
+            wrapper.display_point_to_offset(WrapDisplayPoint::new(0, 0, 0)),
+            0
+        );
+        assert_eq!(
+            wrapper.display_point_to_offset(WrapDisplayPoint::new(5, 0, 0)),
+            4
+        );
+        let sorted = [Filler::new(0, 1), Filler::new(2, 2), Filler::new(9, 1)];
+        assert_eq!(wrapper.fillers(), sorted);
+    }
+
+    #[test]
+    fn filler_survives_a_rewrap() {
+        let mut wrapper = wrapped("a\nbb\nc", vec![Filler::new(0, 1), Filler::new(2, 2)]);
+        let text = wrapper.text().clone();
+        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
+        assert_eq!(wrapper.len(), 6);
+        assert_eq!(text_rows(&wrapper), [1..2, 2..3, 5..6]);
+    }
+
+    #[test]
+    fn filler_moves_with_an_inserted_and_a_deleted_line() {
+        let fillers = vec![Filler::new(0, 1), Filler::new(2, 2), Filler::new(3, 1)];
+        let mut wrapper = wrapped("a\nbb\nc", fillers.clone());
+        edit(&mut wrapper, 2..2, "x\n");
+        assert_eq!(wrapper.text().to_string(), "a\nx\nbb\nc");
+        assert_eq!(text_rows(&wrapper), [1..2, 2..3, 3..5, 7..8]);
+        assert_eq!(wrapper.len(), 9);
+        edit(&mut wrapper, 2..4, "");
+        assert_eq!(wrapper.fillers(), fillers);
+        assert_eq!(text_rows(&wrapper), [1..2, 2..4, 6..7]);
+    }
+
+    #[test]
+    fn filler_above_a_deleted_line_lands_where_the_edit_ends() {
+        let mut wrapper = wrapped("a\nbb\nc\nd", vec![Filler::new(2, 1)]);
+        // Joins `c` onto `bb`, so the filler above `c` now stands above `bbc`.
+        edit(&mut wrapper, 4..5, "");
+        assert_eq!(wrapper.fillers(), [Filler::new(1, 1)]);
+        assert_eq!(text_rows(&wrapper), [0..1, 2..5, 5..6]);
     }
 }

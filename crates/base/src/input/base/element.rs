@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    InputBaseState, RangeDecorationStyle, TextDecoration,
+    InputBaseState, InputEvent, RangeDecorationStyle, TextDecoration,
     layout::{LastLayout, WhitespaceIndicators},
     mode::LayoutMode,
 };
@@ -732,14 +732,17 @@ impl<M: InputModeKind> TextElement<M> {
         bounds: &Bounds<Pixels>,
     ) -> Option<Path<Pixels>> {
         let corners = Self::layout_range_corners(&range, last_layout)?;
-        let points = frame_outline_points(&corners);
         let origin = bounds.origin + point(last_layout.line_number_width, px(0.));
         let mut builder = gpui::PathBuilder::fill();
-        builder.move_to(origin + *points.first()?);
-        for point in points.iter().skip(1) {
-            builder.line_to(origin + *point);
+        // Rows apart by filler get a shape each, so the fill leaves the filler bare.
+        for run in corners.chunk_by(|a, b| a.bottom_left.y == b.top_left.y) {
+            let points = frame_outline_points(run);
+            builder.move_to(origin + *points.first()?);
+            for point in points.iter().skip(1) {
+                builder.line_to(origin + *point);
+            }
+            builder.close();
         }
-        builder.close();
         builder.build().ok()
     }
 
@@ -793,6 +796,7 @@ impl<M: InputModeKind> TextElement<M> {
                 offset = end;
                 y += last_layout.line_height;
             }
+            y += last_layout.line_height * line.filler_below;
         }
         (!corners.is_empty()).then_some(corners)
     }
@@ -1327,7 +1331,7 @@ impl<M: InputModeKind> TextElement<M> {
                     });
                 }
 
-                offset_y += line.wrapped_lines.len() * last_layout.line_height;
+                offset_y += line.size(last_layout.line_height).height;
             }
 
             infos
@@ -2525,6 +2529,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window.text_system().layout_width(font_id, text_size, ' ')
         };
 
+        let rewraps = self.state.read(cx).display_map.rewraps();
         self.state.update(cx, |state, cx| {
             state.display_map.set_font(font, text_size, cx);
             state.display_map.ensure_text_prepared(&state.text, cx);
@@ -2583,6 +2588,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 state.display_map.on_layout_changed(wrap_width, cx);
                 state.display_map.set_wrapping_indent(wrapping_indent, cx);
             });
+        }
+        if self.state.read(cx).display_map.rewraps() != rewraps {
+            self.state.update(cx, |_, cx| cx.emit(InputEvent::Rewrap));
         }
 
         let line_height = window.line_height();
@@ -2712,7 +2720,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let whitespace_indicators =
             Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
 
-        let lines = Self::layout_lines(
+        let mut lines = Self::layout_lines(
             &state,
             &display_text,
             &last_layout,
@@ -2722,6 +2730,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
             whitespace_indicators,
             window,
         );
+        for (line, &buffer_line) in lines.iter_mut().zip(&last_layout.visible_buffer_lines) {
+            line.filler_below = state.display_map.visible_filler_below(buffer_line);
+        }
 
         let mut longest_line_width = wrap_width.unwrap_or(px(0.));
         // 1. Single line
@@ -3023,9 +3034,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
             offset_y += invisible_top_padding;
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for ((lines, &buffer_line), layout) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .zip(prepaint.last_layout.lines.iter())
             {
                 let is_active = prepaint.current_row == Some(buffer_line);
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
@@ -3039,7 +3051,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         ));
                     }
                 }
-                offset_y += height;
+                offset_y += height + line_height * layout.filler_below;
             }
         }
 
@@ -3054,12 +3066,23 @@ impl<M: InputModeKind> Element for TextElement<M> {
             px(0.)
         };
 
-        // Paint glyph backgrounds
+        // Paint filler and glyph backgrounds
         //
+        // Filler is a quiet band across the text area with nothing in it.
         // gpui's `paint` only draws glyphs, underlines, and strikethroughs, so decoration
         // backgrounds need their own pass. It runs ahead of the indent guides, selections,
         // and text so a highlighted range sits under them instead of covering them.
         let mut offset_y = invisible_top_padding;
+        let line_number_width = prepaint.last_layout.line_number_width;
+        let paint_filler = |top: Pixels, height: Pixels, window: &mut Window| {
+            let origin = point(input_bounds.origin.x + line_number_width, origin.y + top);
+            let size = size(input_bounds.size.width - line_number_width, height);
+            let color = editor_style.muted_foreground.opacity(0.08);
+            window.paint_quad(fill(Bounds::new(origin, size), color));
+        };
+        if prepaint.last_layout.visible_buffer_lines.first() == Some(&0) {
+            paint_filler(px(0.), invisible_top_padding, window);
+        }
         for (line, &buffer_line) in prepaint
             .last_layout
             .lines
@@ -3070,6 +3093,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 origin.x + prepaint.last_layout.line_number_width + scroll_offset,
                 origin.y + offset_y,
             );
+            if line.filler_below > 0 {
+                let text_height = line_height * line.wrapped_lines.len();
+                let filler_height = line_height * line.filler_below;
+                paint_filler(offset_y + text_height, filler_height, window);
+            }
 
             line.paint_background(
                 p,
@@ -3230,9 +3258,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for ((lines, &buffer_line), layout) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .zip(prepaint.last_layout.lines.iter())
             {
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
@@ -3255,6 +3284,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     _ = line.paint(p, line_height, TextAlign::Left, None, window, cx);
                     offset_y += line_height;
                 }
+                offset_y += line_height * layout.filler_below;
 
                 // Add ghost line height after cursor row for line numbers alignment
                 if !prepaint.ghost_lines.is_empty() && prepaint.current_row == Some(buffer_line) {
