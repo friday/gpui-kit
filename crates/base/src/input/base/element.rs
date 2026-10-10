@@ -867,10 +867,54 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
+    /// The rows of every visible line `range` touches, from the gutter to the
+    /// right edge whatever the horizontal scroll. Lines apart by filler get a
+    /// band each, so the filler stays bare.
+    fn layout_whole_lines(
+        range: &Range<usize>,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        input_bounds: &Bounds<Pixels>,
+    ) -> Option<Path<Pixels>> {
+        let mut bands: Vec<(Pixels, Pixels)> = Vec::new();
+        let mut y = bounds.top() + last_layout.visible_top;
+        for (&offset, line) in last_layout
+            .visible_line_byte_offsets
+            .iter()
+            .zip(last_layout.lines.iter())
+        {
+            let bottom = y + last_layout.line_height * line.wrapped_lines.len();
+            // A line's newline belongs to it, so a range ending where the
+            // next line starts leaves that line alone.
+            if range.start <= offset + line.len() && range.end > offset {
+                match bands.last_mut() {
+                    Some(band) if band.1 == y => band.1 = bottom,
+                    _ => bands.push((y, bottom)),
+                }
+            }
+            y = bottom + last_layout.line_height * line.filler_below;
+        }
+        if bands.is_empty() {
+            return None;
+        }
+        let left = input_bounds.left() + last_layout.line_number_width;
+        let right = input_bounds.right();
+        let mut builder = gpui::PathBuilder::fill();
+        for (top, bottom) in &bands {
+            builder.move_to(point(left, *top));
+            builder.line_to(point(right, *top));
+            builder.line_to(point(right, *bottom));
+            builder.line_to(point(left, *bottom));
+            builder.close();
+        }
+        builder.build().ok()
+    }
+
     fn layout_range_decorations(
         &self,
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
+        input_bounds: &Bounds<Pixels>,
         window: &Window,
         content_mask: Bounds<Pixels>,
         cx: &App,
@@ -902,6 +946,19 @@ impl<M: InputModeKind> TextElement<M> {
                     if let Some(path) =
                         Self::layout_match_range(decoration.range().clone(), last_layout, bounds)
                     {
+                        fills.push((path, color));
+                    }
+                }
+                RangeDecorationStyle::WholeLine => {
+                    let color = decoration
+                        .color()
+                        .unwrap_or(state.editor_style.foreground.opacity(0.12));
+                    if let Some(path) = Self::layout_whole_lines(
+                        decoration.range(),
+                        last_layout,
+                        bounds,
+                        input_bounds,
+                    ) {
                         fills.push((path, color));
                     }
                 }
@@ -3013,6 +3070,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let (range_decoration_fills, range_decoration_frames) = self.layout_range_decorations(
             &last_layout,
             &bounds,
+            &input_bounds,
             window,
             window.content_mask().bounds,
             cx,
@@ -4246,6 +4304,7 @@ mod tests {
             let (fills, frames) = TextElement::new(editor.clone()).layout_range_decorations(
                 layout,
                 &state.input_bounds,
+                &state.input_bounds,
                 window,
                 state.input_bounds,
                 cx,
@@ -4348,12 +4407,68 @@ mod tests {
             let (fills, frames) = TextElement::new(editor.clone()).layout_range_decorations(
                 layout,
                 &state.input_bounds,
+                &state.input_bounds,
                 window,
                 state.input_bounds,
                 cx,
             );
             assert!(fills.is_empty());
             assert_eq!(frames.len(), 5);
+        });
+    }
+
+    #[gpui::test]
+    fn whole_line_decorations_fill_every_row_across_the_text_area(cx: &mut TestAppContext) {
+        let text = "one\nlong enough to wrap onto a second row here\nthree\nfour";
+        let (editor, window) = decoration_editor(cx, text, true);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            let three = text.find("three").unwrap();
+            editor.update(cx, |state, cx| {
+                state.set_fillers(vec![crate::input::Filler::new(3, 2)], cx);
+                state.create_range_decorations_collection(
+                    vec![
+                        // Ends where the next line starts, so it holds one line.
+                        RangeDecoration::new(4..three).with_style(RangeDecorationStyle::WholeLine),
+                        // Two lines with filler between them.
+                        RangeDecoration::new(three..text.len())
+                            .with_style(RangeDecorationStyle::WholeLine),
+                    ],
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+            let state = editor.read(cx);
+            let layout = state.last_layout.as_ref().unwrap();
+            let (fills, _) = TextElement::new(editor.clone()).layout_range_decorations(
+                layout,
+                &state.input_bounds,
+                &state.input_bounds,
+                window,
+                state.input_bounds,
+                cx,
+            );
+            assert_eq!(fills.len(), 2);
+            let height = layout.line_height;
+            let wrapped = &fills[0].0.bounds;
+            assert!(layout.lines[1].wrapped_lines.len() > 1);
+            assert_eq!(
+                wrapped.left(),
+                state.input_bounds.left() + layout.line_number_width
+            );
+            assert_eq!(wrapped.right(), state.input_bounds.right());
+            assert_eq!(wrapped.top(), state.input_bounds.top() + height);
+            assert_eq!(
+                wrapped.size.height,
+                height * layout.lines[1].wrapped_lines.len()
+            );
+            let apart = &fills[1].0;
+            assert_eq!(apart.bounds.size.height, height * 4);
+            // One band ends where the filler starts and the next begins where
+            // it ends, so the filler between them stays bare.
+            let edge = |y: Pixels| apart.vertices.iter().any(|v| v.xy_position.y == y);
+            assert!(edge(apart.bounds.top() + height));
+            assert!(edge(apart.bounds.top() + height * 3));
         });
     }
 
@@ -4382,6 +4497,7 @@ mod tests {
                 assert!(TextElement::<EditorMode>::layout_range_corners(&hidden, layout).is_none());
                 let (_, frames) = TextElement::new(editor.clone()).layout_range_decorations(
                     layout,
+                    &state.input_bounds,
                     &state.input_bounds,
                     window,
                     state.input_bounds,
