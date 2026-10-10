@@ -145,6 +145,10 @@ impl WrapMap {
         self.wrapper.prepare_if_need(text, cx);
     }
 
+    pub(super) fn wrapper_mut(&mut self) -> &mut TextWrapper {
+        &mut self.wrapper
+    }
+
     /// Get access to the underlying wrapper (for rendering/hit-testing)
     pub(crate) fn wrapper(&self) -> &TextWrapper {
         &self.wrapper

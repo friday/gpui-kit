@@ -128,9 +128,20 @@ actions!(
 #[derive(Clone)]
 pub enum InputEvent {
     Change,
-    PressEnter { secondary: bool, shift: bool },
+    PressEnter {
+        secondary: bool,
+        shift: bool,
+    },
     Focus,
     Blur,
+    /// Every line was wrapped again, because the wrap width, the font or the
+    /// wrapping indent changed, so a line may now take a different number of
+    /// rows. The first layout counts. An edit reports its own rows through
+    /// [`InputEvent::Change`].
+    ///
+    /// Emitted while the frame that shows the new wrapping is laid out, so a
+    /// change made in answer, such as new filler, shows in the next frame.
+    Rewrap,
 }
 
 pub(super) const CONTEXT: &str = "Input";
@@ -3464,7 +3475,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         //
         // - included the input padding.
         // - included the scroll offset.
-        let inner_position = position - bounds.origin - point(line_number_width, px(0.));
+        let mut inner_position = position - bounds.origin - point(line_number_width, px(0.));
+        // A point on filler stands for the text row nearest to it.
+        let display_row = (inner_position.y / line_height).floor().max(0.) as usize;
+        if let Some(row) = self.display_map.nearest_text_row(display_row) {
+            inner_position.y = line_height * (row as f32 + 0.5);
+        }
 
         let mut y_offset = last_layout.visible_top;
         // Position relative to the last line walked, kept for a pointer that ends up
@@ -3521,7 +3537,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .zip(last_line_pos)
             .zip(last_layout.visible_line_byte_offsets.last())
             .map(|((line_layout, pos), line_start)| {
-                let last_row_top = (line_layout.size(line_height).height - line_height).max(px(0.));
+                let last_row_top = line_height * line_layout.wrapped_lines.len().saturating_sub(1);
                 let pos = point(pos.x, last_row_top);
                 (
                     self.resolve_index(line_start + line_layout.len()),
