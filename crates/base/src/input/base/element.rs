@@ -2621,11 +2621,19 @@ impl<M: InputModeKind> Element for TextElement<M> {
             Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
 
         let mut bounds = bounds;
-        let wrap_width = if multi_line && state.soft_wrap {
+        let live_wrap_width = if multi_line && state.soft_wrap {
             Some(bounds.size.width - line_number_width - RIGHT_MARGIN)
         } else {
             None
         };
+        let wrap_width = live_wrap_width.map(|live| {
+            state
+                .last_layout
+                .as_ref()
+                .and_then(|l| l.wrap_width)
+                .filter(|_| state.wrap_width_held)
+                .unwrap_or(live)
+        });
 
         let wrapping_indent = state.wrapping_indent;
         let wrap_width_changed = state
@@ -2791,7 +2799,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
             line.filler_below = state.display_map.visible_filler_below(buffer_line);
         }
 
-        let mut longest_line_width = wrap_width.unwrap_or(px(0.));
+        // A held wrap width wider than the element must not make room to
+        // scroll sideways.
+        let mut longest_line_width = live_wrap_width.unwrap_or(px(0.));
         // 1. Single line
         // 2. Multi-line with soft wrap disabled.
         if state.is_single_line() || !state.soft_wrap {
@@ -2836,7 +2846,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 .set(Some((key, longest_line_width)));
         }
         if state.tokens_visible() {
-            longest_line_width = if let Some(width) = wrap_width {
+            longest_line_width = if let Some(width) = live_wrap_width {
                 width
             } else {
                 state

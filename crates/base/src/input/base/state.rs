@@ -394,6 +394,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) searchable: bool,
     pub(super) replaceable: bool,
     pub(super) soft_wrap: bool,
+    /// See [`Self::set_wrap_width_held`].
+    pub(super) wrap_width_held: bool,
     pub(super) wrapping_indent: WrappingIndent,
     pub(super) scroll_beyond_last_line: Option<usize>,
     pub(super) cursor_surrounding_lines: Option<usize>,
@@ -738,6 +740,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             searchable: false,
             replaceable: true,
             soft_wrap: true,
+            wrap_width_held: false,
             wrapping_indent: WrappingIndent::default(),
             scroll_beyond_last_line: None,
             cursor_surrounding_lines: None,
@@ -5925,6 +5928,59 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_held_wrap_width_keeps_the_rows_while_the_element_narrows(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        struct Frame(Entity<InputBaseState<TextareaMode>>, Rc<Cell<f32>>);
+        impl Render for Frame {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(self.1.get())).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        cx.update(crate::init);
+        let width = Rc::new(Cell::new(600.));
+        let mut input = None;
+        let frame_width = width.clone();
+        let window = cx.open_window(size(px(800.), px(400.)), |window, cx| {
+            cx.set_global(Theme::default());
+            let text = "word ".repeat(200);
+            let state =
+                cx.new(|cx| crate::input::TextareaState::new(window, cx).default_value(text));
+            input = Some(state.clone());
+            Frame(state, frame_width)
+        });
+        let input = input.unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let draw_at = |cx: &mut VisualTestContext, at: f32| {
+            width.set(at);
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx)
+            });
+            input.read_with(cx, |state, _| {
+                (
+                    state.input_bounds.size.width,
+                    state.last_layout.as_ref().unwrap().wrap_width.unwrap(),
+                    state.display_map.wrap_row_count(),
+                )
+            })
+        };
+
+        let (_, wide_wrap, wide_rows) = draw_at(&mut cx, 600.);
+        input.update(&mut cx, |state, cx| state.set_wrap_width_held(true, cx));
+        let (held_bounds, held_wrap, held_rows) = draw_at(&mut cx, 300.);
+        assert_eq!(held_bounds, px(300.), "the element follows its width");
+        assert_eq!(held_wrap, wide_wrap, "the text keeps its wrap width");
+        assert_eq!(held_rows, wide_rows, "and its rows");
+
+        input.update(&mut cx, |state, cx| state.set_wrap_width_held(false, cx));
+        let (_, released_wrap, released_rows) = draw_at(&mut cx, 300.);
+        assert!(released_wrap < wide_wrap, "{released_wrap:?}");
+        assert!(released_rows > wide_rows, "{released_rows} rows");
+    }
+
+    #[gpui::test]
     fn context_menu_handler_is_deferred_and_respects_disabled(cx: &mut TestAppContext) {
         use std::{cell::Cell, rc::Rc};
         cx.update(crate::init);
@@ -10763,6 +10819,21 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
             self.display_map.on_layout_changed(None, cx);
         }
         cx.notify();
+    }
+
+    /// Keep the text wrapped at the width it was last laid out at while the
+    /// element's own width changes, default is not held. Releasing it wraps
+    /// the text once at the element's width.
+    ///
+    /// Wrapping a long text again takes a long time, too long to do on every
+    /// frame of a drag or a resize. While held, the text overflows the
+    /// element or stops short of its edge, and the element itself and its
+    /// scrollbar follow the new width.
+    pub fn set_wrap_width_held(&mut self, held: bool, cx: &mut Context<Self>) {
+        if self.wrap_width_held != held {
+            self.wrap_width_held = held;
+            cx.notify();
+        }
     }
 
     /// Set how soft-wrapped continuation lines are indented, default is [`WrappingIndent::Same`]
