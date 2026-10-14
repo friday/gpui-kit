@@ -153,7 +153,7 @@ impl EditorScrollbarSnapshot {
                 input_bounds,
                 last_layout.line_number_width,
                 scroll_size,
-                state.editor_paddings,
+                state.text_paddings(),
             ),
             cursor_scroll_offset,
             soft_wrap: state.soft_wrap,
@@ -3059,7 +3059,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 state.disabled,
                 *state.active_selection(),
                 state.editor_style.clone(),
-                state.editor_paddings,
+                state.text_paddings(),
             )
         };
         let focused = focus_handle.is_focused(window);
