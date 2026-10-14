@@ -1606,6 +1606,7 @@ impl Element for Scrollbar {
                     let painted_thumb_bg = state.thumb_bg.clone().opacity(visibility_opacity);
 
                     window.set_cursor_style(CursorStyle::default(), &state.bar_hitbox);
+                    let bar_hitbox = state.bar_hitbox.clone();
 
                     window.paint_layer(hitbox_bounds, |cx| {
                         cx.paint_quad(fill(painted_bounds, painted_track_bg));
@@ -1713,8 +1714,14 @@ impl Element for Scrollbar {
                             let state = scrollbar_state.clone();
                             let scroll_handle = self.scroll_handle.clone();
 
-                            move |event: &MouseDownEvent, phase, _, cx| {
-                                if phase.bubble() && bounds.contains(&event.position) {
+                            // Asked of the hitbox rather than the bounds, so a
+                            // press on whatever stands over the bar, like a
+                            // resize handle along the same edge, is not also
+                            // a press on the bar.
+                            move |event: &MouseDownEvent, phase, window, cx| {
+                                if phase.bubble()
+                                    && bar_hitbox.is_hovered_at(event.position, window)
+                                {
                                     cx.stop_propagation();
 
                                     if thumb_bounds.contains(&event.position) {
