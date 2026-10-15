@@ -184,4 +184,24 @@ mod tests {
         });
         assert_eq!(rewraps.get(), 1);
     }
+
+    #[gpui::test]
+    fn a_line_number_gap_moves_the_text_and_narrows_its_wrap(cx: &mut TestAppContext) {
+        let (editor, mut cx) = open(cx, &"word ".repeat(40), vec![]);
+        let laid_out = |cx: &mut VisualTestContext| {
+            editor.read_with(cx, |state, _| {
+                let start = state.range_to_bounds(&(0..0)).unwrap().left();
+                (
+                    start,
+                    state.last_layout.as_ref().unwrap().wrap_width.unwrap(),
+                )
+            })
+        };
+        let (start, wrap) = laid_out(&mut cx);
+        cx.update(|_, cx| editor.update(cx, |state, cx| state.set_line_number_gap(px(6.), cx)));
+        cx.run_until_parked();
+        let (gapped_start, gapped_wrap) = laid_out(&mut cx);
+        assert_eq!(gapped_start - start, px(6.));
+        assert_eq!(wrap - gapped_wrap, px(6.));
+    }
 }
