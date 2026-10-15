@@ -986,6 +986,32 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// Set the value as [`set_value`](Self::set_value) does, but leave its
+    /// soft wrap to the next layout, which knows the width to wrap at. Until
+    /// then every line is one row, and [`is_wrap_pending`](Self::is_wrap_pending)
+    /// says so. The layout that wraps it announces [`InputEvent::Rewrap`].
+    ///
+    /// Wrapping a long text takes a while, and the width the next layout
+    /// wraps at can differ from the last one, as when the new text needs a
+    /// wider gutter for its line numbers. So this wraps once where
+    /// `set_value` can wrap twice. It is for an owner that shows nothing of
+    /// the new text until it is wrapped.
+    pub fn set_value_unwrapped(
+        &mut self,
+        value: impl Into<super::InputContent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.display_map.defer_wrap();
+        self.set_value(value, window, cx);
+    }
+
+    /// Whether the text waits for the next layout to be wrapped. See
+    /// [`set_value_unwrapped`](Self::set_value_unwrapped).
+    pub fn is_wrap_pending(&self) -> bool {
+        self.display_map.is_wrap_pending()
+    }
+
     /// Replace the entire text content while preserving undo history.
     ///
     /// Unlike [`set_value`](Self::set_value), this method records the

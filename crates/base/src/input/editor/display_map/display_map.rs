@@ -323,6 +323,16 @@ impl DisplayMap {
         self.wrap_map.wrapper().rewraps()
     }
 
+    /// Leaves the wrap of the text set next to the next layout. See
+    /// [`TextWrapper::defer_wrap`](super::text_wrapper::TextWrapper::defer_wrap).
+    pub(crate) fn defer_wrap(&mut self) {
+        self.wrap_map.wrapper_mut().defer_wrap();
+    }
+
+    pub(crate) fn is_wrap_pending(&self) -> bool {
+        self.wrap_map.wrapper().is_wrap_pending()
+    }
+
     // ==================== Internal Helpers ====================
 
     /// Rebuild fold projection after wrap_map or fold state changes
