@@ -446,6 +446,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
     pub(super) scrollbar_visible: bool,
+    /// See [`Self::set_line_number_gap`].
+    pub(super) line_number_gap: Pixels,
     /// The unwrapped width of the longest line and what it was measured for.
     pub(super) longest_line_width: Cell<Option<(LongestLineKey, Pixels)>>,
     pub(super) editor_paddings: Edges<Pixels>,
@@ -783,6 +785,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             scroll_size: gpui::size(px(0.), px(0.)),
             editor_scrollbar_snapshot: Cell::new(None),
             scrollbar_visible: true,
+            line_number_gap: px(0.),
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
@@ -10765,6 +10768,21 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
     pub fn scrollbar_visible(mut self, visible: bool) -> Self {
         self.scrollbar_visible = visible;
         self
+    }
+
+    /// Keep `gap` clear between the line numbers and the text, default is
+    /// none. The gap is painted in the editor's background rather than the
+    /// gutter's, and it stays clear of text scrolled under the gutter.
+    pub fn set_line_number_gap(&mut self, gap: Pixels, cx: &mut Context<Self>) {
+        if self.line_number_gap != gap {
+            self.line_number_gap = gap;
+            cx.notify();
+        }
+    }
+
+    /// The room kept clear between the line numbers and the text.
+    pub fn line_number_gap(&self) -> Pixels {
+        self.line_number_gap
     }
 
     /// Set the soft wrap mode, default is true.

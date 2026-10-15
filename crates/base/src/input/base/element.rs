@@ -1175,9 +1175,9 @@ impl<M: InputModeKind> TextElement<M> {
                 None,
             );
 
-            empty_line_number.width + LINE_NUMBER_RIGHT_MARGIN
+            empty_line_number.width + LINE_NUMBER_RIGHT_MARGIN + state.line_number_gap
         } else if state.is_code_editor() {
-            LINE_NUMBER_RIGHT_MARGIN
+            LINE_NUMBER_RIGHT_MARGIN + state.line_number_gap
         } else {
             px(0.)
         };
@@ -1396,8 +1396,10 @@ impl<M: InputModeKind> TextElement<M> {
 
         // Second pass: create and prepaint icons
         let line_height = last_layout.line_height;
-        let line_number_width =
-            last_layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN - FOLD_ICON_HITBOX_WIDTH;
+        let line_number_width = last_layout.line_number_width
+            - LINE_NUMBER_RIGHT_MARGIN
+            - FOLD_ICON_HITBOX_WIDTH
+            - self.state.read(cx).line_number_gap;
         let icon_relative_pos = point(
             (FOLD_ICON_HITBOX_WIDTH - FOLD_ICON_WIDTH).half(),
             (line_height - FOLD_ICON_WIDTH).half(),
@@ -3318,13 +3320,19 @@ impl<M: InputModeKind> Element for TextElement<M> {
             let gutter_bg = editor_style
                 .editor_gutter_background
                 .unwrap_or(editor_background);
+            let gap = self.state.read(cx).line_number_gap;
             let gutter_bounds = editor_gutter_bounds(
                 input_bounds,
-                prepaint.last_layout.line_number_width,
+                prepaint.last_layout.line_number_width - gap,
                 prepaint.ghost_lines_height,
                 editor_paddings,
             );
             window.paint_quad(fill(gutter_bounds, gutter_bg));
+            let gap_bounds = Bounds::new(
+                point(gutter_bounds.right(), gutter_bounds.top()),
+                size(gap, gutter_bounds.size.height),
+            );
+            window.paint_quad(fill(gap_bounds, editor_background));
 
             // Each item is the normal lines.
             for ((lines, &buffer_line), layout) in line_numbers
