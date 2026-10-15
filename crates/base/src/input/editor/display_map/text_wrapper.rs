@@ -275,6 +275,9 @@ pub(crate) struct TextWrapper {
     fillers: Vec<Filler>,
     /// Counts the passes that wrapped every line again.
     rewraps: usize,
+    /// Every line is one row until the next wrap width is set, which wraps
+    /// them all. See [`Self::defer_wrap`].
+    wrap_pending: bool,
     _initialized: bool,
 }
 
@@ -292,8 +295,20 @@ impl TextWrapper {
             grapheme_widths: GraphemeWidths::default(),
             fillers: Vec::new(),
             rewraps: 0,
+            wrap_pending: false,
             _initialized: false,
         }
+    }
+
+    /// Lays out the text and its edits one row per line from now on, until
+    /// the next [`Self::set_wrap_width`] wraps every line at the width it is
+    /// given, even the width it already has.
+    pub(crate) fn defer_wrap(&mut self) {
+        self.wrap_pending = self.wrap_width.is_some();
+    }
+
+    pub(crate) fn is_wrap_pending(&self) -> bool {
+        self.wrap_pending
     }
 
     #[inline]
@@ -368,11 +383,12 @@ impl TextWrapper {
     }
 
     pub(crate) fn set_wrap_width(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {
-        if wrap_width == self.wrap_width {
+        if wrap_width == self.wrap_width && !self.wrap_pending {
             return;
         }
 
         self.wrap_width = wrap_width;
+        self.wrap_pending = false;
         self.update_all(&self.text.clone(), cx);
     }
 
@@ -594,7 +610,7 @@ impl TextWrapper {
             .row;
 
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
-        let wrap_width = self.wrap_width;
+        let wrap_width = self.wrap_width.filter(|_| !self.wrap_pending);
         let line_count = changed_text.lines_len();
 
         // line not contains `\n`.

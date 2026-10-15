@@ -2739,7 +2739,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             .map(|l| l.wrapping_indent != wrapping_indent)
             .unwrap_or(true);
 
-        if wrap_width_changed || wrapping_indent_changed {
+        let wrap_pending = state.display_map.is_wrap_pending();
+        if wrap_width_changed || wrapping_indent_changed || wrap_pending {
             self.state.update(cx, |state, cx| {
                 state.display_map.on_layout_changed(wrap_width, cx);
                 state.display_map.set_wrapping_indent(wrapping_indent, cx);
