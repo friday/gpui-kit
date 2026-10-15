@@ -11,7 +11,7 @@ use gpui::{
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
-use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
+use gpui::{ClickEvent, Half, Hsla, MouseDownEvent, OwnedMenuItem, Point, Subscription};
 use gpui_base::TestSupportExt as _;
 
 use std::rc::Rc;
@@ -305,6 +305,8 @@ pub struct PopupMenu {
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
     external_link_icon: bool,
+    /// The colour of a 1px line between each two items, if any.
+    item_rule: Option<Hsla>,
     scroll_handle: ScrollHandle,
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
@@ -348,6 +350,7 @@ impl PopupMenu {
             scrollable: false,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
+            item_rule: None,
             size: Size::default(),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: gpui_base::POPUP_PRIORITY,
@@ -458,6 +461,14 @@ impl PopupMenu {
     /// Set the menu to show external link icon, default is true.
     pub fn external_link_icon(mut self, visible: bool) -> Self {
         self.external_link_icon = visible;
+        self
+    }
+
+    /// Draw a 1px line in `color` across the whole menu between each two
+    /// items. A separator already divides the items beside it, so it gets
+    /// none.
+    pub fn rule_between_items(mut self, color: impl Into<Hsla>) -> Self {
+        self.item_rule = Some(color.into());
         self
     }
 
@@ -1500,7 +1511,30 @@ impl Render for PopupMenu {
                             .enumerate()
                             // Ignore last separator
                             .filter(|(ix, item)| !(*ix + 1 == items_count && item.is_separator()))
-                            .map(|(ix, item)| self.render_item(ix, item, options, window, cx)),
+                            .map(|(ix, item)| {
+                                let rule = self.item_rule.filter(|_| {
+                                    ix > 0
+                                        && !item.is_separator()
+                                        && !self.menu_items[ix - 1].is_separator()
+                                });
+                                self.render_item(ix, item, options, window, cx).when_some(
+                                    rule,
+                                    |this, color| {
+                                        // Out through the items' 4px padding
+                                        // to the menu's edges, centred in the
+                                        // 2px gap above the item.
+                                        this.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-4.))
+                                                .right(px(-4.))
+                                                .top(px(-1.5))
+                                                .h(px(1.))
+                                                .bg(color),
+                                        )
+                                    },
+                                )
+                            }),
                     )
                     .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
             )
