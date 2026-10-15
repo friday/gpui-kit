@@ -305,8 +305,9 @@ pub struct PopupMenu {
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
     external_link_icon: bool,
-    /// The colour of a 1px line between each two items, if any.
-    item_rule: Option<Hsla>,
+    /// The colour of a 1px line between each two items, if any, read as the
+    /// menu draws so it follows a change of theme.
+    item_rule: Option<Rc<dyn Fn(&App) -> Hsla>>,
     scroll_handle: ScrollHandle,
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
@@ -466,11 +467,11 @@ impl PopupMenu {
         self
     }
 
-    /// Draw a 1px line in `color` across the whole menu between each two
-    /// items. A separator already divides the items beside it, so it gets
-    /// none.
-    pub fn rule_between_items(mut self, color: impl Into<Hsla>) -> Self {
-        self.item_rule = Some(color.into());
+    /// Draw a 1px line in the colour `color` gives across the whole menu
+    /// between each two items. A separator already divides the items beside
+    /// it, so it gets none.
+    pub fn rule_between_items(mut self, color: impl Fn(&App) -> Hsla + 'static) -> Self {
+        self.item_rule = Some(Rc::new(color));
         self
     }
 
@@ -1541,11 +1542,12 @@ impl Render for PopupMenu {
                             // Ignore last separator
                             .filter(|(ix, item)| !(*ix + 1 == items_count && item.is_separator()))
                             .map(|(ix, item)| {
-                                let rule = self.item_rule.filter(|_| {
+                                let rule = self.item_rule.as_ref().filter(|_| {
                                     ix > 0
                                         && !item.is_separator()
                                         && !self.menu_items[ix - 1].is_separator()
                                 });
+                                let rule = rule.map(|color| color(cx));
                                 self.render_item(ix, item, options, window, cx).when_some(
                                     rule,
                                     |this, color| {
