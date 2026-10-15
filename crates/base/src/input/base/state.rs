@@ -449,9 +449,6 @@ pub struct InputBaseState<M: InputModeKind> {
     /// The unwrapped width of the longest line and what it was measured for.
     pub(super) longest_line_width: Cell<Option<(LongestLineKey, Pixels)>>,
     pub(super) editor_paddings: Edges<Pixels>,
-    /// Room the owner keeps clear around the text, on top of the element's
-    /// own padding. See [`Self::text_inset`].
-    pub(super) text_inset: Edges<Pixels>,
     /// The style this state paints with: what was projected onto it, with
     /// every colour left unset resolved from the palette that is current. It
     /// is rebuilt at the top of every render, which is what keeps it current
@@ -788,7 +785,6 @@ impl<M: InputModeKind> InputBaseState<M> {
             scrollbar_visible: true,
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
-            text_inset: Edges::default(),
             deferred_scroll_offset: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
@@ -894,18 +890,6 @@ impl<M: InputModeKind> InputBaseState<M> {
     #[doc(hidden)]
     pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
         self.editor_paddings = paddings;
-    }
-
-    /// The room between the text and the element's edge: the element's
-    /// padding and the owner's inset together.
-    pub(super) fn text_paddings(&self) -> Edges<Pixels> {
-        let (padding, inset) = (self.editor_paddings, self.text_inset);
-        Edges {
-            top: padding.top + inset.top,
-            right: padding.right + inset.right,
-            bottom: padding.bottom + inset.bottom,
-            left: padding.left + inset.left,
-        }
     }
 
     pub fn apply_highlighter_fold_candidates(
@@ -4623,11 +4607,10 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             .flex_grow_1()
             .overflow_x_hidden()
             .when(self.is_multi_line(), |this| {
-                let paddings = self.text_paddings();
-                this.pt(paddings.top)
-                    .pr(paddings.right)
-                    .pb(paddings.bottom)
-                    .pl(paddings.left)
+                this.pt(self.editor_paddings.top)
+                    .pr(self.editor_paddings.right)
+                    .pb(self.editor_paddings.bottom)
+                    .pl(self.editor_paddings.left)
             })
             .child(TextElement::new(entity.clone()).placeholder(self.placeholder.clone()))
             .when(self.shows_scrollbar(), |this| {
@@ -5902,29 +5885,6 @@ mod tests {
         hidden
             .input
             .update(cx, |state, _| assert!(!state.shows_scrollbar()));
-    }
-
-    #[gpui::test]
-    fn a_text_inset_adds_to_the_padding_the_element_sets(cx: &mut TestAppContext) {
-        cx.update(crate::init);
-
-        let inset = Edges {
-            right: px(64.),
-            ..Edges::default()
-        };
-        let view = InputView::build_textarea(cx, move |state| state.text_inset(inset));
-        view.input.update(cx, |state, _| {
-            state.set_editor_paddings(Edges::all(px(10.)));
-            assert_eq!(
-                state.text_paddings(),
-                Edges {
-                    top: px(10.),
-                    right: px(74.),
-                    bottom: px(10.),
-                    left: px(10.),
-                }
-            );
-        });
     }
 
     #[gpui::test]
@@ -10778,17 +10738,6 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
     /// own, like an overview map shared by editors that track one handle.
     pub fn scrollbar_visible(mut self, visible: bool) -> Self {
         self.scrollbar_visible = visible;
-        self
-    }
-
-    /// Keep room clear around the text, on top of the element's own padding,
-    /// default is none.
-    ///
-    /// The scrollbar stays at the element's edge. Padding on the element
-    /// itself would pull the scrollbar in with the text, which is wrong for
-    /// controls laid over the text's corner.
-    pub fn text_inset(mut self, inset: Edges<Pixels>) -> Self {
-        self.text_inset = inset;
         self
     }
 
