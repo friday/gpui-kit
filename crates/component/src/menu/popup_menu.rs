@@ -308,6 +308,9 @@ pub struct PopupMenu {
     /// The colour of a 1px line between each two items, if any, read as the
     /// menu draws so it follows a change of theme.
     item_rule: Option<Rc<dyn Fn(&App) -> Hsla>>,
+    /// The colour of the band behind each label, if labels head the items
+    /// under them.
+    heading_band: Option<Rc<dyn Fn(&App) -> Hsla>>,
     scroll_handle: ScrollHandle,
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
@@ -352,6 +355,7 @@ impl PopupMenu {
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             item_rule: None,
+            heading_band: None,
             size: Size::default(),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: gpui_base::POPUP_PRIORITY,
@@ -472,6 +476,16 @@ impl PopupMenu {
     /// it, so it gets none.
     pub fn rule_between_items(mut self, color: impl Fn(&App) -> Hsla + 'static) -> Self {
         self.item_rule = Some(Rc::new(color));
+        self
+    }
+
+    /// Draw each label as the heading of the items under it: small and faded,
+    /// with no room kept for an icon, on a band in the colour `background`
+    /// gives across the whole menu. With lines between the items, the line
+    /// over a heading takes the theme's border colour, since it ends a group
+    /// rather than an item.
+    pub fn section_headings(mut self, background: impl Fn(&App) -> Hsla + 'static) -> Self {
+        self.heading_band = Some(Rc::new(background));
         self
     }
 
@@ -1297,6 +1311,30 @@ impl PopupMenu {
                 .border_b(px(2.))
                 .border_color(cx.theme().border)
                 .disabled(true),
+            PopupMenuItem::Label(label) if let Some(band) = &self.heading_band => this
+                .disabled(true)
+                .cursor_default()
+                .child(
+                    // Out through the items' 4px padding to the menu's edges,
+                    // and over the menu's own padding above the first item.
+                    div()
+                        .absolute()
+                        .left(-EDGE_PADDING)
+                        .right(-EDGE_PADDING)
+                        .top(if ix == 0 { -EDGE_PADDING } else { px(-0.5) })
+                        .bottom(px(-1.))
+                        .when(ix == 0, |band| band.rounded_t(cx.theme().radius))
+                        .bg(band(cx)),
+                )
+                .child(
+                    div()
+                        // The menu's own padding already stands over the first.
+                        .when(ix > 0, |heading| heading.pt(px(2.)))
+                        .text_xs()
+                        .text_color(cx.theme().popover_foreground)
+                        .opacity(0.5)
+                        .child(label.clone()),
+                ),
             PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
                 h_flex()
                     .cursor_default()
@@ -1547,7 +1585,12 @@ impl Render for PopupMenu {
                                         && !item.is_separator()
                                         && !self.menu_items[ix - 1].is_separator()
                                 });
-                                let rule = rule.map(|color| color(cx));
+                                let rule = rule.map(|color| match item {
+                                    PopupMenuItem::Label(_) if self.heading_band.is_some() => {
+                                        cx.theme().border
+                                    }
+                                    _ => color(cx),
+                                });
                                 self.render_item(ix, item, options, window, cx).when_some(
                                     rule,
                                     |this, color| {
