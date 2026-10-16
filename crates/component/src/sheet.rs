@@ -162,6 +162,7 @@ impl RenderOnce for Sheet {
             .occlude()
             .w(size.width)
             .h(size.height)
+            .corner_radii(crate::window_corner_radii(window))
             .bg(overlay_color(self.overlay, cx));
 
         let surface = v_flex()
