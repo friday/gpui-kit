@@ -1,12 +1,12 @@
 // From:
 // https://github.com/zed-industries/zed/blob/56daba28d40301ee4c05546fadb691d070b7b2b6/crates/gpui/examples/window_shadow.rs
 use gpui::{
-    AnyElement, App, CursorStyle, Decorations, Edges, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size, Styled as _, Tiling,
-    Window, div, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, Corners, CursorStyle, Decorations, Edges, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size,
+    Styled as _, Tiling, Window, div, point, prelude::FluentBuilder as _, px,
 };
 
-use crate::ActiveTheme;
+use crate::{ActiveTheme, StyledExt as _};
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) const SHADOW_SIZE: Pixels = px(0.0);
@@ -15,11 +15,8 @@ pub(crate) const SHADOW_SIZE: Pixels = px(20.0);
 const BORDER_SIZE: Pixels = px(1.0);
 /// Half-width of the resize hit band on each side of the visible frame (inner border).
 const RESIZE_HIT_SIZE: Pixels = px(4.0);
-///
-/// GPUI currently clips overflowing children to a rectangular content mask. A non-zero
-/// radius here would round the frame itself but leave child backgrounds visible in the
-/// corners, so keep the generic window wrapper square until rounded content masks exist.
-pub(crate) const BORDER_RADIUS: Pixels = px(0.0);
+/// The window radius of libadwaita, which most Linux desktops' own windows match.
+const BORDER_RADIUS: Pixels = px(12.0);
 
 /// Create a new window border.
 pub fn window_border() -> WindowBorder {
@@ -82,6 +79,27 @@ fn client_frame_insets(shadow_size: Pixels, tiling: &Tiling) -> Edges<Pixels> {
         insets.right = px(0.0);
     }
     insets
+}
+
+/// The radius of each corner of the window's frame: zero under server decorations and
+/// where the corner meets a tiled edge.
+///
+/// GPUI clips children to rectangles, so the frame cannot cut a child's background off
+/// at its corner. An element that paints up to a corner of the window rounds that
+/// corner itself with these radii, as the title bar does.
+pub fn window_corner_radii(window: &Window) -> Corners<Pixels> {
+    match window.window_decorations() {
+        Decorations::Server => Corners::all(px(0.0)),
+        Decorations::Client { tiling } => {
+            let radius = |tiled: bool| if tiled { px(0.0) } else { BORDER_RADIUS };
+            Corners {
+                top_left: radius(tiling.top || tiling.left),
+                top_right: radius(tiling.top || tiling.right),
+                bottom_right: radius(tiling.bottom || tiling.right),
+                bottom_left: radius(tiling.bottom || tiling.left),
+            }
+        }
+    }
 }
 
 /// Get the window paddings.
@@ -177,12 +195,6 @@ impl RenderOnce for WindowBorder {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when(!(tiling.top || tiling.right), |div| {
-                div.rounded_tr(BORDER_RADIUS)
-            })
-            .when(!(tiling.top || tiling.left), |div| {
-                div.rounded_tl(BORDER_RADIUS)
-            })
             .when(!tiling.top, |div| div.pt(visual_shadow))
             .when(!tiling.bottom, |div| div.pb(visual_shadow))
             .when(!tiling.left, |div| div.pl(visual_shadow))
@@ -214,12 +226,7 @@ impl RenderOnce for WindowBorder {
                     .min_h_0()
                     .min_w_0()
                     .overflow_hidden()
-                    .when(!(tiling.top || tiling.right), |div| {
-                        div.rounded_tr(BORDER_RADIUS)
-                    })
-                    .when(!(tiling.top || tiling.left), |div| {
-                        div.rounded_tl(BORDER_RADIUS)
-                    })
+                    .corner_radii(window_corner_radii(window))
                     .border_color(border_color)
                     .when(!tiling.top, |div| div.border_t(BORDER_SIZE))
                     .when(!tiling.bottom, |div| div.border_b(BORDER_SIZE))

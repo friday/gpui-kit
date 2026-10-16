@@ -692,6 +692,7 @@ impl RenderOnce for Dialog {
                                     div()
                                         .absolute()
                                         .size_full()
+                                        .corner_radii(crate::window_corner_radii(window))
                                         .window_control_area(WindowControlArea::Drag)
                                         .when(self.props.overlay_visible, |overlay| {
                                             overlay.bg(overlay_color(true, cx))

@@ -1,5 +1,5 @@
 use crate::{
-    ActiveTheme, ElementExt, Placement,
+    ActiveTheme, ElementExt, Placement, StyledExt as _,
     dialog::{ANIMATION_DURATION, Dialog},
     input::AnyInputState,
     native_menu::FallbackMenuOverlay,
@@ -539,12 +539,13 @@ impl gpui_base::RootPlugin for WindowState {
         TextSelection::activate_scope(self.active_text_selection_scope(), window, cx);
     }
 
-    fn style(&self, surface: &mut gpui::Stateful<gpui::Div>, _window: &mut Window, cx: &mut App) {
+    fn style(&self, surface: &mut gpui::Stateful<gpui::Div>, window: &mut Window, cx: &mut App) {
         use gpui::Refineable as _;
         surface.style().refine(
             &gpui::StyleRefinement::default()
                 .font_family(cx.theme().font_family.clone())
                 .bg(cx.theme().tokens.background)
+                .corner_radii(window_border::window_corner_radii(window))
                 .text_color(cx.theme().foreground),
         );
     }
