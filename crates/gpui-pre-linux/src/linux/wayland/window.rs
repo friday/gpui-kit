@@ -1844,11 +1844,17 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn activate(&self) {
+        let state = self.borrow();
+        let Some(activation) = &state.globals.activation else {
+            return;
+        };
+        if let Some(token) = crate::linux::take_next_activation_token() {
+            activation.activate(token, &state.surface);
+            return;
+        }
         // Try to request an activation token. Even though the activation is likely going to be rejected,
         // KWin and Mutter can use the app_id to visually indicate we're requesting attention.
-        let state = self.borrow();
-        if let (Some(activation), Some(app_id)) = (&state.globals.activation, state.app_id.clone())
-        {
+        if let Some(app_id) = state.app_id.clone() {
             state.client.set_pending_activation(state.surface.id());
             let token = activation.get_activation_token(&state.globals.qh, ());
             // The serial isn't exactly important here, since the activation is probably going to be rejected anyway.
