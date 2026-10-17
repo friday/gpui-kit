@@ -26,9 +26,29 @@ pub(crate) use wayland::*;
 #[cfg(feature = "x11")]
 pub(crate) use x11::*;
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::WindowingModes;
+
+thread_local! {
+    static NEXT_ACTIVATION_TOKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Makes the next window activation hand `token` to the compositor, in place of a token the app
+/// asks for itself, which the compositor is likely to refuse. The `XDG_ACTIVATION_TOKEN` another
+/// launch of the app was started with proves the user asked for the window. Only Wayland reads
+/// it.
+// TODO: a side channel, since `PlatformWindow::activate` is in gpui, which this fork does not
+// carry. Goes when `activate` takes the token.
+pub fn activate_next_window_with_token(token: String) {
+    NEXT_ACTIVATION_TOKEN.set(Some(token));
+}
+
+#[cfg(feature = "wayland")]
+pub(crate) fn take_next_activation_token() -> Option<String> {
+    NEXT_ACTIVATION_TOKEN.take()
+}
 
 /// Returns the default platform implementation for the current OS.
 ///
