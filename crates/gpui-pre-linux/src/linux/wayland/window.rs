@@ -96,6 +96,9 @@ struct InProgressConfigure {
     resizing: bool,
     visibility: WindowVisibility,
     tiling: Tiling,
+    /// The `xdg_toplevel` `activated` state. `None` for a surface that has no
+    /// such state.
+    activated: Option<bool>,
 }
 
 pub struct WaylandWindowState {
@@ -128,7 +131,13 @@ pub struct WaylandWindowState {
     window_bounds: Bounds<Pixels>,
     client: WaylandClientStatePtr,
     handle: AnyWindowHandle,
+    /// Whether the window has the keyboard.
     active: bool,
+    /// The `xdg_toplevel` `activated` state, once the compositor has sent
+    /// one. The compositor can take the keyboard while the window stays
+    /// active, as Mutter does while it moves the window, so this is what the
+    /// window reports where it is known, as GTK does.
+    activated: Option<bool>,
     hovered: bool,
     redraw_requested: bool,
     presentation: PresentationState,
@@ -631,6 +640,7 @@ impl WaylandWindowState {
             appearance,
             handle,
             active: false,
+            activated: None,
             hovered: false,
             redraw_requested: false,
             presentation: PresentationState::Unpresented,
@@ -1103,6 +1113,12 @@ impl WaylandWindowStatePtr {
                     state.tiling = configure.tiling;
                     let visibility_changed = state.visibility != configure.visibility;
                     state.visibility = configure.visibility;
+                    let activation_changed = configure
+                        .activated
+                        .filter(|activated| state.activated != Some(*activated));
+                    if activation_changed.is_some() {
+                        state.activated = activation_changed;
+                    }
                     // Limit interactive resizes to once per vblank
                     let throttled = configure.resizing && state.resize_throttle;
                     if throttled {
@@ -1128,6 +1144,9 @@ impl WaylandWindowStatePtr {
                     drop(state);
                     if visibility_changed {
                         self.report_visibility(configure.visibility);
+                    }
+                    if let Some(activated) = activation_changed {
+                        self.report_active_status(activated);
                     }
                     if throttled {
                         return;
@@ -1226,9 +1245,11 @@ impl WaylandWindowStatePtr {
                 let mut maximized = false;
                 let mut resizing = false;
                 let mut visibility = WindowVisibility::Visible;
+                let mut activated = false;
 
                 for state in states {
                     match state {
+                        xdg_toplevel::State::Activated => activated = true,
                         xdg_toplevel::State::Maximized => {
                             maximized = true;
                         }
@@ -1267,6 +1288,7 @@ impl WaylandWindowStatePtr {
                     resizing,
                     visibility,
                     tiling,
+                    activated: Some(activated),
                 });
 
                 false
@@ -1342,6 +1364,7 @@ impl WaylandWindowStatePtr {
                     resizing: false,
                     visibility: WindowVisibility::Visible,
                     tiling: Tiling::default(),
+                    activated: None,
                 });
                 drop(state);
 
@@ -1377,6 +1400,7 @@ impl WaylandWindowStatePtr {
                     resizing: false,
                     visibility: WindowVisibility::Visible,
                     tiling: Tiling::default(),
+                    activated: None,
                 });
 
                 false
@@ -1581,14 +1605,23 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn set_focused(&self, focus: bool) {
-        self.state.borrow_mut().active = focus;
-        let callback = self.callbacks.borrow_mut().active_status_change.take();
-        if let Some(mut fun) = callback {
-            fun(focus);
-            self.callbacks.borrow_mut().active_status_change = Some(fun);
+        let mut state = self.state.borrow_mut();
+        state.active = focus;
+        let activated = state.activated;
+        drop(state);
+        if activated.is_none() {
+            self.report_active_status(focus);
         }
         if let Some(adapter) = self.state.borrow_mut().accesskit_adapter.as_mut() {
             adapter.update_window_focus_state(focus);
+        }
+    }
+
+    fn report_active_status(&self, active: bool) {
+        let callback = self.callbacks.borrow_mut().active_status_change.take();
+        if let Some(mut fun) = callback {
+            fun(active);
+            self.callbacks.borrow_mut().active_status_change = Some(fun);
         }
     }
 
@@ -1830,7 +1863,8 @@ impl PlatformWindow for WaylandWindow {
     fn request_attention(&self) {}
 
     fn is_active(&self) -> bool {
-        self.borrow().active
+        let state = self.borrow();
+        state.activated.unwrap_or(state.active)
     }
 
     fn visibility(&self) -> WindowVisibility {
