@@ -29,6 +29,9 @@ pub(crate) fn input_highlighter_factory() -> InputHighlighterFactory {
 
 const SYNC_PARSE_TIMEOUT: Duration = Duration::from_millis(2);
 const SYNC_PARSE_MAX_BYTES: usize = 256 * 1024;
+/// How long an edit's background parse waits for the typing to stop. A first
+/// parse does not wait: with no tree of the text before it to fall back on,
+/// `styles()` answers one default run until it lands.
 const PARSE_DEBOUNCE: Duration = Duration::from_millis(150);
 
 struct TreeSitterInputHighlighter {
@@ -45,10 +48,17 @@ impl TreeSitterInputHighlighter {
     }
 
     /// Settle after the edits reached the tree: drop a pending background
-    /// parse when the synchronous one `completed`, or schedule one for `text`.
+    /// parse when the synchronous one `completed`, or schedule one for
+    /// `text` after `debounce`.
+    ///
+    /// The background parse hands over its tree before it works out the
+    /// injection layers, which can take longer than the parse itself (a
+    /// macro's token tree is parsed again as Rust), so a pane takes its
+    /// colours as soon as the main grammar has them.
     fn finish_update(
         &mut self,
         completed: bool,
+        debounce: Duration,
         text: &Rope,
         folding: bool,
         window: &mut gpui::Window,
@@ -65,7 +75,6 @@ impl TreeSitterInputHighlighter {
         let old_tree = highlighter.borrow().tree().cloned();
         let injection_data = highlighter.borrow().injection_parse_data();
         let text = text.clone();
-        let text_for_apply = text.clone();
         let cancel = Arc::new(AtomicBool::new(false));
 
         let task = cx.spawn_in(window, async move |entity, cx| {
@@ -76,10 +85,11 @@ impl TreeSitterInputHighlighter {
                 }
             }
             let _cancel_guard = CancelOnDrop(cancel.clone());
-            cx.background_executor().timer(PARSE_DEBOUNCE).await;
+            cx.background_executor().timer(debounce).await;
 
             let parse_cancel = cancel.clone();
-            let result = cx
+            let parse_text = text.clone();
+            let tree = cx
                 .background_executor()
                 .spawn(async move {
                     let (mut parser, grammar) =
@@ -94,33 +104,42 @@ impl TreeSitterInputHighlighter {
                     };
                     let options = ParseOptions::new().progress_callback(&mut progress);
                     let tree = parser.parse_with_options(
-                        &mut |offset, _| parse_input_bytes(&text, offset),
+                        &mut |offset, _| parse_input_bytes(&parse_text, offset),
                         old_tree.as_ref(),
                         Some(options),
                     )?;
-                    if parse_cancel.load(Ordering::Relaxed) {
-                        return None;
-                    }
+                    (!parse_cancel.load(Ordering::Relaxed)).then_some(tree)
+                })
+                .await;
+            let Some(tree) = tree else {
+                return;
+            };
+            highlighter
+                .borrow_mut()
+                .apply_background_tree(tree.clone(), &text);
+            let _ = entity.update(cx, |_, cx| cx.notify());
+
+            let layers_text = text.clone();
+            let (injections, folds) = cx
+                .background_executor()
+                .spawn(async move {
                     let injections = injection_data.map_or_else(Default::default, |data| {
-                        SyntaxHighlighter::compute_injection_layers(data, &tree, &text)
+                        SyntaxHighlighter::compute_injection_layers(data, &tree, &layers_text)
                     });
                     let folds = if folding {
                         extract_fold_ranges(&tree)
                     } else {
                         Vec::new()
                     };
-                    Some((tree, injections, folds))
+                    (injections, folds)
                 })
                 .await;
-
-            if let Some((tree, injections, folds)) = result {
-                highlighter
-                    .borrow_mut()
-                    .apply_background_tree(tree, &text_for_apply, injections);
-                let _ = entity.update(cx, |state, cx| {
-                    state.apply_highlighter_fold_candidates(folds, cx);
-                });
-            }
+            highlighter
+                .borrow_mut()
+                .apply_background_injection_layers(&text, injections);
+            let _ = entity.update(cx, |state, cx| {
+                state.apply_highlighter_fold_candidates(folds, cx);
+            });
         });
         parse_task.borrow_mut().replace(task);
     }
@@ -151,6 +170,7 @@ impl InputHighlighter for TreeSitterInputHighlighter {
         cx: &mut gpui::Context<EditorState>,
     ) {
         let edit = edit.map(to_tree_sitter_edit);
+        let first_parse = self.inner.borrow().tree().is_none();
         let completed = {
             let mut highlighter = self.inner.borrow_mut();
             if text.len() > SYNC_PARSE_MAX_BYTES {
@@ -160,7 +180,12 @@ impl InputHighlighter for TreeSitterInputHighlighter {
                 highlighter.update(edit, text, Some(SYNC_PARSE_TIMEOUT))
             }
         };
-        self.finish_update(completed, text, folding, window, cx);
+        let debounce = if first_parse {
+            Duration::ZERO
+        } else {
+            PARSE_DEBOUNCE
+        };
+        self.finish_update(completed, debounce, text, folding, window, cx);
     }
 
     fn update_batch(
@@ -177,6 +202,7 @@ impl InputHighlighter for TreeSitterInputHighlighter {
             .iter()
             .map(|(edit, _)| to_tree_sitter_edit(*edit))
             .collect();
+        let first_parse = self.inner.borrow().tree().is_none();
         let completed = {
             let mut highlighter = self.inner.borrow_mut();
             if text.len() > SYNC_PARSE_MAX_BYTES {
@@ -188,7 +214,12 @@ impl InputHighlighter for TreeSitterInputHighlighter {
                 highlighter.update_edits(&edits, text, Some(SYNC_PARSE_TIMEOUT))
             }
         };
-        self.finish_update(completed, text, folding, window, cx);
+        let debounce = if first_parse {
+            Duration::ZERO
+        } else {
+            PARSE_DEBOUNCE
+        };
+        self.finish_update(completed, debounce, text, folding, window, cx);
     }
 
     fn styles(
