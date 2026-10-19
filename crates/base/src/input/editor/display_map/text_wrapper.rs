@@ -29,6 +29,16 @@ pub enum WrappingIndent {
     Same,
 }
 
+/// How far past the wrap width a row may read when deciding what fits.
+///
+/// Both sides carry float dust: the row width is a running f32 sum of the
+/// grapheme widths, and the wrap width arrives by subtraction. Each addition
+/// rounds by at most half an ulp of the running sum (unit roundoff 2^-24), so
+/// at a ~200px viewport the error only approaches this slack on a line of
+/// roughly a thousand graphemes, well past any real code line. Genuine
+/// overflow overshoots by whole pixels, so the slack cannot flip a real break.
+const FIT_SLACK: Pixels = px(0.01);
+
 /// Choose Unicode line-break opportunities, measuring a row as the sum of the
 /// shaped widths of its graphemes. Oversized words fall back to complete
 /// graphemes, never UTF-8 bytes.
@@ -50,7 +60,7 @@ fn measured_wrap_boundaries(
         ends.push(ix + grapheme.len());
         x.push(x[x.len() - 1] + grapheme_width(grapheme));
     }
-    if x[x.len() - 1] <= width {
+    if x[x.len() - 1] <= width + FIT_SLACK {
         return Vec::new();
     }
     let indent = if wrapping_indent == WrappingIndent::Same {
@@ -75,13 +85,18 @@ fn measured_wrap_boundaries(
         } else {
             width - indent_width
         };
-        let fitting = x[first + 1..].partition_point(|&end| end - x[first] <= available);
+        let fitting =
+            x[first + 1..].partition_point(|&end| end - x[first] <= available + FIT_SLACK);
         // An indivisible grapheme wider than the viewport still consumes a row.
         let fitting_end = ends[first + fitting.max(1) - 1];
-        if fitting_end == text.len() {
+        // Spaces at a break hang past the edge, as in a browser. A break
+        // opportunity comes after the spaces, so they would otherwise have
+        // to fit, and a row that its words fill would lose its last word.
+        let hang_end = text.len() - text[fitting_end..].trim_start_matches([' ', '\t']).len();
+        if hang_end == text.len() {
             break;
         }
-        let candidate = opportunities.partition_point(|&ix| ix <= fitting_end);
+        let candidate = opportunities.partition_point(|&ix| ix <= hang_end);
         let end = candidate
             .checked_sub(1)
             .map(|ix| opportunities[ix])
@@ -1414,6 +1429,25 @@ mod tests {
         assert_eq!(wrap("abc", 0., WrappingIndent::None), vec![1, 2]);
         // Closing punctuation stays with the preceding Chinese character.
         assert_eq!(wrap("你好，世界", 2., WrappingIndent::None), vec![3, 9]);
+    }
+
+    #[test]
+    fn measured_wrap_keeps_a_row_that_fills_the_width() {
+        // Tenths are not exact in binary, so ten of them sum a hair past
+        // one: a row they fill must still count as fitting.
+        let wrap = |text: &str, width| {
+            measured_wrap_boundaries(text, px(width), WrappingIndent::None, |_| px(0.1))
+                .into_iter()
+                .map(|b| b.ix)
+                .collect::<Vec<_>>()
+        };
+        assert!(wrap("0123456789", 1.).is_empty());
+        // The space after a row that fills the width hangs past the edge.
+        assert_eq!(wrap("0123456789 next", 1.), vec![11]);
+        assert_eq!(wrap("0123 5678 next", 1.), vec![10]);
+        assert!(wrap("0123456789   ", 1.).is_empty());
+        // Eleven tenths genuinely overflow the width.
+        assert_eq!(wrap("01234567890", 1.), vec![10]);
     }
 
     #[test]

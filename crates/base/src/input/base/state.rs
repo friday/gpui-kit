@@ -522,6 +522,7 @@ pub struct InputPresentation {
     masked: bool,
     multi_line: bool,
     code_editor: bool,
+    scrollbar: bool,
     text_align: TextAlign,
     placeholder: SharedString,
     mask_placeholder: Option<String>,
@@ -561,6 +562,10 @@ impl InputPresentation {
 
     pub fn is_code_editor(&self) -> bool {
         self.code_editor
+    }
+
+    pub fn shows_scrollbar(&self) -> bool {
+        self.scrollbar
     }
 
     pub fn text_align(&self) -> TextAlign {
@@ -607,6 +612,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             masked: self.masked,
             multi_line: self.is_multi_line(),
             code_editor: self.is_code_editor(),
+            scrollbar: self.shows_scrollbar(),
             text_align: self.text_align,
             placeholder: self.placeholder.clone(),
             mask_placeholder: self.mask_pattern.placeholder(),
@@ -5988,6 +5994,41 @@ mod tests {
         let (_, released_wrap, released_rows) = draw_at(&mut cx, 300.);
         assert!(released_wrap < wide_wrap, "{released_wrap:?}");
         assert!(released_rows > wide_rows, "{released_rows} rows");
+    }
+
+    #[gpui::test]
+    fn a_soft_wrapped_row_fills_the_width_and_never_scrolls_sideways(cx: &mut TestAppContext) {
+        struct Frame(Entity<InputBaseState<TextareaMode>>);
+        impl Render for Frame {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(300.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        cx.update(crate::init);
+        let mut input = None;
+        let window = cx.open_window(size(px(800.), px(400.)), |window, cx| {
+            cx.set_global(Theme::default());
+            let text = "word ".repeat(200);
+            let state =
+                cx.new(|cx| crate::input::TextareaState::new(window, cx).default_value(text));
+            input = Some(state.clone());
+            Frame(state)
+        });
+        let input = input.unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+
+        input.read_with(&cx, |state, _| {
+            let layout = state.last_layout.as_ref().unwrap();
+            let bounds = state.input_bounds.size.width;
+            assert_eq!(layout.wrap_width, Some(bounds - layout.line_number_width));
+            assert!(
+                state.scroll_size.width <= bounds,
+                "{:?} scrolls sideways in {bounds:?}",
+                state.scroll_size.width
+            );
+        });
     }
 
     #[gpui::test]
