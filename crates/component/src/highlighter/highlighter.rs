@@ -984,23 +984,27 @@ impl SyntaxHighlighter {
         })
     }
 
-    /// Apply a tree that was parsed on a background thread.
-    ///
-    /// `injection_layers` must also be pre-computed in the background via
-    /// [`compute_injection_layers`] to avoid blocking the main thread.
-    pub(crate) fn apply_background_tree(
+    /// Apply a tree of `text` that was parsed on a background thread, unless
+    /// the text has changed since. The injection layers stay as they are
+    /// until [`Self::apply_background_injection_layers`] brings the ones
+    /// worked out from this tree.
+    pub(crate) fn apply_background_tree(&mut self, tree: Tree, text: &Rope) {
+        if self.text.eq(text) {
+            self.tree = Some(tree);
+        }
+    }
+
+    /// Apply injection layers of `text` that were worked out on a background
+    /// thread via [`Self::compute_injection_layers`], unless the text has
+    /// changed since.
+    pub(crate) fn apply_background_injection_layers(
         &mut self,
-        tree: Tree,
         text: &Rope,
         injection_layers: Vec<InjectionLayer>,
     ) {
-        // Only apply if the text still matches what was parsed.
-        if !self.text.eq(text) {
-            return;
+        if self.text.eq(text) {
+            self.injection_layers = injection_layers;
         }
-
-        self.tree = Some(tree);
-        self.injection_layers = injection_layers;
     }
 
     /// Parse injection layers after the main tree is updated.
