@@ -593,17 +593,24 @@ impl RenderOnce for Input {
             },
             cx,
         );
+        let presentation = state.presentation(cx);
         state.set_editor_paddings(
-            if state.presentation(cx).is_multi_line() {
+            if presentation.is_multi_line() {
+                let left = if presentation.is_code_editor() {
+                    self.size.input_px().min(px(6.))
+                } else {
+                    self.size.input_px()
+                };
                 Edges {
                     top: self.size.input_py(),
-                    right: self.size.input_px(),
-                    bottom: self.size.input_py(),
-                    left: if state.presentation(cx).is_code_editor() {
-                        self.size.input_px().min(px(6.))
-                    } else {
+                    // The scrollbar's thumb runs down the right padding.
+                    right: if presentation.shows_scrollbar() {
                         self.size.input_px()
+                    } else {
+                        left
                     },
+                    bottom: self.size.input_py(),
+                    left,
                 }
             } else {
                 Edges::default()
@@ -1191,6 +1198,42 @@ mod tests {
             Input::handle_accessibility_set_value(&state, Some(&action), window, cx)
         });
         assert_eq!(editor.read_with(cx, |editor, _| editor.value()), "(");
+    }
+
+    #[gpui::test]
+    fn an_editor_without_a_scrollbar_pads_its_right_like_its_left(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Render};
+
+        struct Probe(Entity<crate::input::EditorState>);
+
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(400.))
+                    .h(px(200.))
+                    .child(crate::input::Editor::new(&self.0))
+            }
+        }
+
+        cx.update(crate::init);
+        let insets = |cx: &mut gpui::TestAppContext, scrollbar: bool| {
+            let (probe, cx) = cx.add_window_view(|window, cx| {
+                Probe(cx.new(|cx| {
+                    crate::input::EditorState::new(window, cx).scrollbar_visible(scrollbar)
+                }))
+            });
+            cx.run_until_parked();
+            let bounds = probe.read_with(cx, |probe, cx| probe.0.read(cx).input_bounds());
+            (bounds.left(), px(400.) - bounds.right())
+        };
+
+        let (left, right) = insets(cx, false);
+        assert_eq!(right, left);
+        let (left, right) = insets(cx, true);
+        assert!(
+            right > left,
+            "the thumb needs a lane, {right:?} by {left:?}"
+        );
     }
 
     #[gpui::test]

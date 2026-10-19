@@ -595,6 +595,7 @@ pub struct InputPresentation {
     masked: bool,
     multi_line: bool,
     code_editor: bool,
+    scrollbar: bool,
     text_align: TextAlign,
     placeholder: SharedString,
     mask_placeholder: Option<String>,
@@ -634,6 +635,10 @@ impl InputPresentation {
 
     pub fn is_code_editor(&self) -> bool {
         self.code_editor
+    }
+
+    pub fn shows_scrollbar(&self) -> bool {
+        self.scrollbar
     }
 
     pub fn text_align(&self) -> TextAlign {
@@ -696,10 +701,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Call it after setting the value and the wrapping indent. `width` is the
     /// width of the input's text area: its width less its padding, and less
     /// the line-number gutter for an editor with line numbers. It wraps as
-    /// layout does, a little short of that width and with the state's wrapping
-    /// indent. Once the input has been laid out this does nothing, and layout
-    /// keeps the wrap up to date. The font and font size must match the input's
-    /// actual text style.
+    /// layout does, at that width and with the state's wrapping indent. Once
+    /// the input has been laid out this does nothing, and layout keeps the
+    /// wrap up to date. The font and font size must match the input's actual
+    /// text style.
     pub fn prewrap(
         &mut self,
         font: gpui::Font,
@@ -710,7 +715,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         if self.last_layout.is_some() {
             return;
         }
-        let wrap_width = (width - RIGHT_MARGIN).max(px(1.));
+        let wrap_width = width.max(px(1.));
         self.display_map.set_font(font, font_size, cx);
         self.display_map
             .on_layout_changed(self.soft_wrap.then_some(wrap_width), cx);
@@ -732,6 +737,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             masked: self.masked,
             multi_line: self.is_multi_line(),
             code_editor: self.is_code_editor(),
+            scrollbar: self.shows_scrollbar(),
             text_align: self.text_align,
             placeholder: self.placeholder.clone(),
             mask_placeholder: self.mask_pattern.placeholder(),
@@ -6723,6 +6729,41 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_soft_wrapped_row_fills_the_width_and_never_scrolls_sideways(cx: &mut TestAppContext) {
+        struct Frame(Entity<InputBaseState<TextareaMode>>);
+        impl Render for Frame {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(300.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        cx.update(crate::init);
+        let mut input = None;
+        let window = cx.open_window(size(px(800.), px(400.)), |window, cx| {
+            cx.set_global(Theme::default());
+            let text = "word ".repeat(200);
+            let state =
+                cx.new(|cx| crate::input::TextareaState::new(window, cx).default_value(text));
+            input = Some(state.clone());
+            Frame(state)
+        });
+        let input = input.unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+
+        input.read_with(&cx, |state, _| {
+            let layout = state.last_layout.as_ref().unwrap();
+            let bounds = state.input_bounds.size.width;
+            assert_eq!(layout.wrap_width, Some(bounds - layout.line_number_width));
+            assert!(
+                state.scroll_size.width <= bounds,
+                "{:?} scrolls sideways in {bounds:?}",
+                state.scroll_size.width
+            );
+        });
+    }
+
+    #[gpui::test]
     fn context_menu_handler_is_deferred_and_respects_disabled(cx: &mut TestAppContext) {
         use std::{cell::Cell, rc::Rc};
         cx.update(crate::init);
@@ -9227,6 +9268,59 @@ mod tests {
             input.read_with(&cx, |state, _| state.display_map().wrap_row_count()),
             laid_out
         );
+    }
+
+    /// Prewrapped at the width of the text area, the text has the rows its
+    /// first layout gives it.
+    #[gpui::test]
+    fn test_prewrap_wraps_as_the_first_layout_does(cx: &mut TestAppContext) {
+        struct Frame(Entity<InputBaseState<TextareaMode>>);
+        impl Render for Frame {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(300.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        cx.update(crate::init);
+        // One word with no break in it, so a row a few pixels narrower holds
+        // fewer graphemes and the rows add up to a different count.
+        let text = "x".repeat(5000);
+
+        let mut input = None;
+        let window = cx.open_window(size(px(800.), px(400.)), |window, cx| {
+            cx.set_global(Theme::default());
+            let state = cx
+                .new(|cx| crate::input::TextareaState::new(window, cx).default_value(text.clone()));
+            input = Some(state.clone());
+            Frame(state)
+        });
+        let input = input.unwrap();
+        let cx_laid_out = VisualTestContext::from_window(window.into(), cx);
+        cx_laid_out.run_until_parked();
+        let width = input.read_with(&cx_laid_out, |state, _| {
+            state.last_layout.as_ref().unwrap().wrap_width.unwrap()
+        });
+
+        let mut input = None;
+        let mut prewrapped = 0;
+        let window = cx.open_window(size(px(800.), px(400.)), |window, cx| {
+            let style = window.text_style();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let state = cx.new(|cx| {
+                let mut state =
+                    crate::input::TextareaState::new(window, cx).default_value(text.clone());
+                state.prewrap(style.font(), font_size, width, cx);
+                prewrapped = state.display_map().wrap_row_count();
+                state
+            });
+            input = Some(state.clone());
+            Frame(state)
+        });
+        let input = input.unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+        let laid_out = input.read_with(&cx, |state, _| state.display_map().wrap_row_count());
+        assert_eq!(prewrapped, laid_out);
     }
 
     /// Soft wrap is on by default, for every mode that can wrap.

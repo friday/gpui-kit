@@ -2714,8 +2714,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
             Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
 
         let mut bounds = bounds;
+        // A soft-wrapped row never scrolls sideways, so it takes the whole
+        // width. The editor's right padding holds the caret at a row's end.
         let live_wrap_width = if multi_line && state.soft_wrap {
-            Some(bounds.size.width - line_number_width - RIGHT_MARGIN)
+            Some(bounds.size.width - line_number_width)
         } else {
             None
         };
@@ -2973,7 +2975,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // last content row, so take the max rather than summing — summing
         // left a band of empty space the cursor could never reach.
         let mut scroll_size = size(
-            if longest_line_width + line_number_width + RIGHT_MARGIN > bounds.size.width {
+            if live_wrap_width.is_none()
+                && longest_line_width + line_number_width + RIGHT_MARGIN > bounds.size.width
+            {
                 longest_line_width + line_number_width + RIGHT_MARGIN
             } else {
                 longest_line_width
