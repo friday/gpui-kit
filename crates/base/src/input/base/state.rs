@@ -1018,6 +1018,27 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// The syntax style runs the editor would paint over `range` right now.
+    /// An editor with no highlighter, or one that has not parsed its text
+    /// yet, answers one default run; a parsed one answers what painting
+    /// uses. For tests that must tell a parsed editor from one still
+    /// waiting on its first tree.
+    #[cfg(feature = "test-support")]
+    pub fn syntax_style_runs(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+        match self.mode.highlighter() {
+            Some(highlighter) => match highlighter.borrow().as_ref() {
+                Some(highlighter) => {
+                    highlighter.styles(&range, self.editor_style.highlight_styles.as_ref())
+                }
+                None => vec![(range, gpui::HighlightStyle::default())],
+            },
+            None => vec![(range, gpui::HighlightStyle::default())],
+        }
+    }
+
     /// Install the parser/highlighter adapter used by code-editor mode.
     pub fn set_highlighter_factory(
         &mut self,
