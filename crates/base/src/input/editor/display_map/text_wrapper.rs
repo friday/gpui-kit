@@ -39,9 +39,38 @@ pub enum WrappingIndent {
 /// overflow overshoots by whole pixels, so the slack cannot flip a real break.
 const FIT_SLACK: Pixels = px(0.01);
 
+/// ASCII punctuation a long run of code may break after.
+const BREAK_AFTER: &[u8] = b"_([{)]}.,:;=/-<>&|+*?!\\";
+
+/// ASCII punctuation a row never starts with, so a closing mark or a
+/// separator stays with what it closes or follows.
+const NEVER_STARTS: &[u8] = b")]},;.:?>=";
+
+/// Where a run of code with no space left to break at may break: after
+/// punctuation, unless what follows is a space, a closing mark or the same
+/// mark again, as in `::`, `&&` or `//`. An apostrophe is not among them, so a
+/// word like "don't" holds together.
+fn code_break_opportunities(text: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    (1..bytes.len())
+        .filter(|&ix| {
+            let (before, after) = (bytes[ix - 1], bytes[ix]);
+            BREAK_AFTER.contains(&before)
+                && after.is_ascii_graphic()
+                && after != before
+                && !NEVER_STARTS.contains(&after)
+        })
+        .collect()
+}
+
 /// Choose Unicode line-break opportunities, measuring a row as the sum of the
-/// shaped widths of its graphemes. Oversized words fall back to complete
-/// graphemes, never UTF-8 bytes.
+/// shaped widths of its graphemes.
+///
+/// A word that a row of its own could not hold either breaks on the row it
+/// starts on, after punctuation where it has some, so it is not moved down
+/// only to be broken there. The line's leading whitespace is never a row of
+/// its own. Past that, a word falls back to complete graphemes, never UTF-8
+/// bytes.
 ///
 /// The widths are summed rather than each candidate row shaped, since that
 /// takes about a dozen shaping calls per line, most of a second for a long
@@ -72,10 +101,26 @@ fn measured_wrap_boundaries(
         0
     };
     let indent_width = grapheme_width(" ") * indent as f32;
+    let lead_end = text.len() - text.trim_start_matches([' ', '\t']).len();
     let opportunities: Vec<usize> = unicode_linebreak::linebreaks(text)
         .map(|(ix, _)| ix)
         .filter(|ix| ends.binary_search(ix).is_ok())
         .collect();
+    let code_breaks = code_break_opportunities(text);
+    // The width from one grapheme boundary to another.
+    let width_between = |from: usize, to: usize| {
+        x[ends.partition_point(|&end| end <= to)] - x[ends.partition_point(|&end| end <= from)]
+    };
+    // The width of the word starting at a break opportunity, without the
+    // spaces that hang after it.
+    let word_width = |ix: usize| {
+        let next = opportunities[opportunities.partition_point(|&o| o <= ix)..]
+            .first()
+            .copied()
+            .unwrap_or(text.len());
+        width_between(ix, ix + text[ix..next].trim_end_matches([' ', '\t']).len())
+    };
+    let continued_width = width - indent_width;
     let mut result = Vec::new();
     let mut first = 0;
     let mut start = 0;
@@ -96,12 +141,21 @@ fn measured_wrap_boundaries(
         if hang_end == text.len() {
             break;
         }
-        let candidate = opportunities.partition_point(|&ix| ix <= hang_end);
-        let end = candidate
-            .checked_sub(1)
-            .map(|ix| opportunities[ix])
-            .filter(|&ix| ix > start && (start != 0 || ix > indent))
-            .unwrap_or(fitting_end);
+        let past = start.max(lead_end);
+        let last_within = |breaks: &[usize], limit: usize| {
+            breaks[..breaks.partition_point(|&ix| ix <= limit)]
+                .last()
+                .copied()
+                .filter(|&ix| ix > past)
+        };
+        let end = match last_within(&opportunities, hang_end) {
+            Some(ix) if word_width(ix) <= continued_width + FIT_SLACK => ix,
+            space => last_within(&code_breaks, fitting_end)
+                .filter(|&ix| space.is_none_or(|space| ix > space))
+                // Spaces that hang past the edge can put the space's break
+                // after the last grapheme that fits.
+                .unwrap_or(fitting_end.max(space.unwrap_or(0))),
+        };
         result.push(gpui::Boundary {
             ix: end,
             next_indent: indent as u32,
@@ -1424,7 +1478,8 @@ mod tests {
         assert_eq!(wrap("hello world", 8., WrappingIndent::None), vec![6]);
         assert_eq!(wrap("a👩‍💻b", 2., WrappingIndent::None), vec!["a👩‍💻".len()]);
         assert_eq!(wrap("  abcdefgh", 5., WrappingIndent::Same), vec![5, 8]);
-        assert_eq!(wrap("  abcdefgh", 5., WrappingIndent::None), vec![2, 7]);
+        // The indentation is never a row of its own.
+        assert_eq!(wrap("  abcdefgh", 5., WrappingIndent::None), vec![5]);
         assert!(wrap("", 0., WrappingIndent::None).is_empty());
         assert_eq!(wrap("abc", 0., WrappingIndent::None), vec![1, 2]);
         // Closing punctuation stays with the preceding Chinese character.
@@ -1448,6 +1503,31 @@ mod tests {
         assert!(wrap("0123456789   ", 1.).is_empty());
         // Eleven tenths genuinely overflow the width.
         assert_eq!(wrap("01234567890", 1.), vec![10]);
+    }
+
+    #[test]
+    fn measured_wrap_breaks_a_long_run_of_code_where_it_starts() {
+        let wrap = |text: &str, width| {
+            measured_wrap_boundaries(text, px(width), WrappingIndent::None, |_| px(1.))
+                .into_iter()
+                .map(|b| b.ix)
+                .collect::<Vec<_>>()
+        };
+        // A call wider than a row starts on the indented row, not under it,
+        // and breaks after an underscore or a bracket.
+        assert_eq!(
+            wrap("    danger_item(discard_label(x)),", 12.),
+            vec![11, 16, 24]
+        );
+        // A name no row could hold is not moved off the keyword before it.
+        assert_eq!(wrap("    fn the_long_name() {", 12.), vec![11, 23]);
+        // A word that fits a row of its own still moves down whole.
+        assert_eq!(wrap("foo(bar) baz_qux", 12.), vec![9]);
+        // Inside a word of prose, an apostrophe is not a place to break.
+        assert_eq!(wrap("aaaa'bbbbbbbbbb", 6.), vec![6, 12]);
+        // Doubled punctuation and closing marks stay together.
+        assert_eq!(wrap("a_b&&cc", 4.), vec![2, 5]);
+        assert_eq!(wrap("aaa(b)).c", 6.), vec![4]);
     }
 
     #[test]
