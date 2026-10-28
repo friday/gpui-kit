@@ -76,7 +76,11 @@ where
         let focus_handle = cx.focus_handle();
 
         let adapter = SearchableListAdapter::new(delegate, on_confirm, on_cancel, on_render_empty);
-        let list = cx.new(|cx| ListState::new(adapter, window, cx).reset_on_cancel(false));
+        let list = cx.new(|cx| {
+            ListState::new(adapter, window, cx)
+                .reset_on_cancel(false)
+                .select_on_hover(true)
+        });
 
         let list_focus_handle = list.read(cx).focus_handle.clone();
         let list_search_focus_handle = list.read(cx).query_input.focus_handle(cx);
