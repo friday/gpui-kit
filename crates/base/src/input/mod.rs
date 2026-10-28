@@ -59,6 +59,8 @@ mod lsp;
 mod mask_pattern;
 #[path = "base/mode.rs"]
 mod mode;
+#[path = "editor/move_lines.rs"]
+mod move_lines;
 #[path = "base/movement.rs"]
 mod movement;
 #[path = "base/native.rs"]
