@@ -1572,6 +1572,31 @@ console.log(answer);
 
     #[test]
     #[cfg(feature = "tree-sitter-languages")]
+    fn test_tsx_highlights_keywords_strings_and_comments_as_typescript_does() {
+        let tsx = "// a\nimport { b } from \"c\";\nconst d: string = <p id=\"e\">{b}</p>;\n";
+
+        let rope = Rope::from_str(tsx);
+        let mut highlighter = SyntaxHighlighter::new("tsx");
+        highlighter.update(None, &rope, None);
+
+        let highlights = highlighter.match_styles(0..tsx.len());
+
+        for (text, highlight_name) in [
+            ("// a", "comment"),
+            ("import", "keyword"),
+            ("\"c\"", "string"),
+            ("const", "keyword"),
+            ("string", "type.builtin"),
+        ] {
+            assert!(
+                has_highlight_covering(&highlights, tsx, text, highlight_name),
+                "`{text}` should be highlighted as {highlight_name}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "tree-sitter-languages")]
     fn test_kotlin_highlights_string_templates() {
         let kotlin = "fun greet(name: String) = \"hi $name, ${name.length}\"\n";
 
