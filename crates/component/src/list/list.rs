@@ -19,7 +19,8 @@ use gpui::{
 };
 use gpui::{
     AppContext, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
-    Length, MouseButton, ParentElement, Render, Styled, Task, Window, div, prelude::FluentBuilder,
+    Length, MouseButton, MouseMoveEvent, ParentElement, Render, Styled, Task, Window, div,
+    prelude::FluentBuilder,
 };
 use rust_i18n::t;
 
@@ -84,6 +85,7 @@ pub struct ListState<D: ListDelegate> {
     reset_on_cancel: bool,
     searchable: bool,
     selectable: bool,
+    select_on_hover: bool,
     _search_task: Task<()>,
     _load_more_task: Task<()>,
     _query_input_subscription: Subscription,
@@ -109,6 +111,7 @@ where
             last_query: None,
             selected_index: None,
             selectable: true,
+            select_on_hover: false,
             searchable: false,
             item_to_measure_index: IndexPath::default(),
             deferred_scroll_to_index: None,
@@ -146,6 +149,16 @@ where
     pub fn set_selectable(&mut self, selectable: bool, cx: &mut Context<Self>) {
         self.selectable = selectable;
         cx.notify();
+    }
+
+    /// Sets whether the pointer moves the selection onto the item it passes
+    /// over, as in a dropdown, default is `false`.
+    ///
+    /// Leave it off for a list whose selection is the user's choice, such as
+    /// a sidebar, where passing over an item must not choose it.
+    pub fn select_on_hover(mut self, select_on_hover: bool) -> Self {
+        self.select_on_hover = select_on_hover;
+        self
     }
 
     pub fn delegate(&self) -> &D {
@@ -482,6 +495,7 @@ where
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let selectable = self.selectable;
+        let select_on_hover = self.select_on_hover;
         let selected = self.selected_index.map(|s| s.eq_row(ix)).unwrap_or(false);
         let mouse_right_clicked = self
             .mouse_right_clicked_index
@@ -523,6 +537,17 @@ where
                         cx.notify();
                     }),
                 )
+                // A move, not hover: arrow keys scroll the list under a still
+                // pointer, and the item that lands under it must not take the
+                // selection back from the keyboard.
+                .when(select_on_hover, |this| {
+                    this.on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, window, cx| {
+                        if this.selected_index != Some(ix) {
+                            this.set_selected_index(Some(ix), window, cx);
+                            cx.notify();
+                        }
+                    }))
+                })
             })
     }
 
@@ -949,6 +974,29 @@ mod measurement_tests {
                 div()
             },
         );
+    }
+
+    #[gpui::test]
+    fn the_pointer_moves_the_selection_only_when_the_list_asks_for_it(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        for select_on_hover in [false, true] {
+            let (view, cx) = cx.add_window_view(|window, cx| {
+                BounceList(cx.new(|cx| {
+                    ListState::new(Delegate { counts: vec![40] }, window, cx)
+                        .select_on_hover(select_on_hover)
+                }))
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let state = view.read_with(cx, |view, _| view.0.clone());
+            // The first row is 36 px tall, so this lands on the second.
+            cx.simulate_mouse_move(gpui::point(px(100.), px(60.)), None, Default::default());
+            let selected = state.read_with(cx, |state, _| state.selected_index());
+            assert_eq!(
+                selected,
+                select_on_hover.then(|| IndexPath::new(1)),
+                "select_on_hover: {select_on_hover}"
+            );
+        }
     }
 
     #[gpui::test]
