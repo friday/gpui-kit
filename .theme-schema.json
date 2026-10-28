@@ -253,6 +253,10 @@
           "description": "Border color for inputs such as Input, Select, etc.",
           "type": ["string", "null"]
         },
+        "input.placeholder": {
+          "description": "Placeholder text color for inputs such as Input.",
+          "type": ["string", "null"]
+        },
         "link": {
           "description": "Link text color.",
           "type": ["string", "null"]

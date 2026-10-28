@@ -3089,7 +3089,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let (display_text, text_color) = if is_empty {
             (
                 &Rope::from(placeholder.as_str()),
-                dim(state.editor_style.muted_foreground),
+                dim(state
+                    .editor_style
+                    .placeholder
+                    .unwrap_or(state.editor_style.muted_foreground)),
             )
         } else if state.masked {
             (
