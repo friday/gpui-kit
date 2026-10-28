@@ -158,6 +158,7 @@ pub struct ResizeHandle<T: 'static, E: 'static + Render> {
     edge: Option<HandleEdge>,
     drag: Option<(T, DragConstructor<T, E>)>,
     appearance: Option<ResizeHandleRenderer>,
+    grab_padding: Pixels,
     /// The band itself. Listeners a caller attaches through the interactive
     /// element traits land here, on the element the pointer actually hits;
     /// base places and sizes it when it is laid out.
@@ -172,6 +173,7 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
             edge: None,
             drag: None,
             appearance: None,
+            grab_padding: HANDLE_PADDING,
             axis,
             base: div(),
         }
@@ -197,6 +199,14 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
         f: impl Fn(&T, &Point<Pixels>, &mut Window, &mut App) -> Entity<E> + 'static,
     ) -> Self {
         self.drag = Some((value, Box::new(f)));
+        self
+    }
+
+    /// How far the grab band reaches past the line, on each side the band
+    /// grows to. The default is 4 px, so a band straddling its boundary is
+    /// 9 px wide with the line.
+    pub fn grab_padding(mut self, padding: Pixels) -> Self {
+        self.grab_padding = padding;
         self
     }
 
@@ -272,15 +282,16 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         window: &mut Window,
         cx: &mut App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        let neg_offset = -HANDLE_PADDING;
+        let padding = self.grab_padding;
+        let neg_offset = -padding;
         let axis = self.axis;
         let edge = self.edge;
         // Sizes are border-box: the extent has to name the whole band, padding
         // included, or the content box resolves to zero and the hairline
         // overflows into the padding, landing wherever the padding happens to
         // push it.
-        let hug_extent = HANDLE_SIZE + HANDLE_PADDING;
-        let straddle_extent = HANDLE_SIZE + HANDLE_PADDING * 2.;
+        let hug_extent = HANDLE_SIZE + padding;
+        let straddle_extent = HANDLE_SIZE + padding * 2.;
         // The caller's listeners are already on it; what base adds is where the
         // band goes and what it holds.
         let base = std::mem::replace(&mut self.base, div());
@@ -314,28 +325,28 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                         .right_0()
                         .h_full()
                         .w(hug_extent)
-                        .pl(HANDLE_PADDING),
+                        .pl(padding),
                     (Some(HandleEdge::Leading), Axis::Horizontal) => this
                         .cursor_col_resize()
                         .top_0()
                         .left_0()
                         .h_full()
                         .w(hug_extent)
-                        .pr(HANDLE_PADDING),
+                        .pr(padding),
                     (Some(HandleEdge::Trailing), Axis::Vertical) => this
                         .cursor_row_resize()
                         .bottom_0()
                         .left_0()
                         .w_full()
                         .h(hug_extent)
-                        .pt(HANDLE_PADDING),
+                        .pt(padding),
                     (Some(HandleEdge::Leading), Axis::Vertical) => this
                         .cursor_row_resize()
                         .top_0()
                         .left_0()
                         .w_full()
                         .h(hug_extent)
-                        .pb(HANDLE_PADDING),
+                        .pb(padding),
                     // Straddling the boundary: half the band on either side.
                     (None, Axis::Horizontal) => this
                         .cursor_col_resize()
@@ -343,14 +354,14 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                         .left(neg_offset)
                         .h_full()
                         .w(straddle_extent)
-                        .px(HANDLE_PADDING),
+                        .px(padding),
                     (None, Axis::Vertical) => this
                         .cursor_row_resize()
                         .top(neg_offset)
                         .left_0()
                         .w_full()
                         .h(straddle_extent)
-                        .py(HANDLE_PADDING),
+                        .py(padding),
                 })
                 .child(
                     // A renderer that declines — or is absent — leaves the
