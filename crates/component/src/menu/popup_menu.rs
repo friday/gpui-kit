@@ -6,8 +6,8 @@ use crate::scroll::ScrollableElement;
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
 use crate::{Side, Size, kbd::Kbd};
 use gpui::{
-    Action, Anchor, AnyElement, App, AppContext, Bounds, Context, DismissEvent, Edges, Entity,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
+    Action, Anchor, AnyElement, AnyView, App, AppContext, Bounds, Context, DismissEvent, Edges,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
@@ -17,6 +17,8 @@ use gpui_base::TestSupportExt as _;
 use std::rc::Rc;
 
 const CONTEXT: &str = "PopupMenu";
+
+type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -45,6 +47,7 @@ pub enum PopupMenuItem {
         action: Option<Box<dyn Action>>,
         // For link item
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+        tooltip: Option<TooltipBuilder>,
     },
     /// A menu item with custom element render.
     ElementItem {
@@ -54,6 +57,7 @@ pub enum PopupMenuItem {
         action: Option<Box<dyn Action>>,
         render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>,
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+        tooltip: Option<TooltipBuilder>,
     },
     /// A submenu item that opens another popup menu.
     Submenu {
@@ -61,6 +65,7 @@ pub enum PopupMenuItem {
         label: SharedString,
         disabled: bool,
         menu: Entity<PopupMenu>,
+        tooltip: Option<TooltipBuilder>,
     },
 }
 
@@ -77,6 +82,7 @@ impl PopupMenuItem {
             action: None,
             is_link: false,
             handler: None,
+            tooltip: None,
         }
     }
 
@@ -94,6 +100,7 @@ impl PopupMenuItem {
             action: None,
             render: Box::new(move |window, cx| builder(window, cx).into_any_element()),
             handler: None,
+            tooltip: None,
         }
     }
 
@@ -105,6 +112,7 @@ impl PopupMenuItem {
             label: label.into(),
             disabled: false,
             menu,
+            tooltip: None,
         }
     }
 
@@ -209,6 +217,31 @@ impl PopupMenuItem {
         self
     }
 
+    /// Set a tooltip shown while the pointer rests on the item, enabled or
+    /// not, such as the reason a disabled item cannot be chosen.
+    ///
+    /// Only works for [`PopupMenuItem::Item`], [`PopupMenuItem::ElementItem`] and [`PopupMenuItem::Submenu`].
+    pub fn tooltip(mut self, build: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
+        match &mut self {
+            PopupMenuItem::Item { tooltip, .. }
+            | PopupMenuItem::ElementItem { tooltip, .. }
+            | PopupMenuItem::Submenu { tooltip, .. } => {
+                *tooltip = Some(Rc::new(build));
+            }
+            _ => {}
+        }
+        self
+    }
+
+    fn tooltip_builder(&self) -> Option<TooltipBuilder> {
+        match self {
+            PopupMenuItem::Item { tooltip, .. }
+            | PopupMenuItem::ElementItem { tooltip, .. }
+            | PopupMenuItem::Submenu { tooltip, .. } => tooltip.clone(),
+            _ => None,
+        }
+    }
+
     /// Create a link menu item.
     #[inline]
     pub fn link(label: impl Into<SharedString>, href: impl Into<String>) -> Self {
@@ -221,6 +254,7 @@ impl PopupMenuItem {
             action: None,
             is_link: true,
             handler: Some(Rc::new(move |_, _, cx| cx.open_url(&href))),
+            tooltip: None,
         }
     }
 
@@ -1300,7 +1334,8 @@ impl PopupMenu {
 
                 cx.notify();
             }))
-            .when_some(item.a11y_label(), |this, label| this.aria_label(label));
+            .when_some(item.a11y_label(), |this, label| this.aria_label(label))
+            .when_some(item.tooltip_builder(), |this, build| this.tooltip(build));
 
         match item {
             PopupMenuItem::Separator => this
@@ -1428,6 +1463,7 @@ impl PopupMenu {
                 label,
                 menu,
                 disabled,
+                ..
             } => this
                 .selected(selected)
                 .disabled(*disabled)
@@ -1666,6 +1702,41 @@ mod tests {
             panic!("expected the original mouse click");
         };
         assert_eq!(event.up.click_count, 2);
+    }
+
+    #[gpui::test]
+    fn a_disabled_item_shows_its_tooltip_under_the_pointer(cx: &mut gpui::TestAppContext) {
+        use std::cell::Cell;
+
+        cx.update(crate::init);
+        let builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let builds = builds.clone();
+            move |_, cx| {
+                PopupMenu::new(cx).item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "disabled-menu-content".into())
+                            .w(px(100.))
+                            .h(px(20.))
+                            .child("Push")
+                    })
+                    .disabled(true)
+                    .tooltip(move |_, cx| {
+                        builds.set(builds.get() + 1);
+                        cx.new(|_| gpui::Empty).into()
+                    }),
+                )
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let position = cx.debug_bounds("disabled-menu-content").unwrap().center();
+        cx.simulate_mouse_move(position, None, Default::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(builds.get() > 0, "the disabled item's tooltip is built");
     }
 
     #[gpui::test]
