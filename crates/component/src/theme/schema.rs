@@ -526,6 +526,12 @@ pub struct ThemeConfigColors {
     /// Hover secondary background color.
     #[serde(rename = "secondary.hover.background")]
     pub secondary_hover: Option<SharedString>,
+    /// Background color for the highlighted item in a Select or Combobox dropdown.
+    #[serde(rename = "select.active.background")]
+    pub select_active: Option<SharedString>,
+    /// Text color for the highlighted item in a Select or Combobox dropdown.
+    #[serde(rename = "select.active.foreground")]
+    pub select_active_foreground: Option<SharedString>,
     /// Input selection background color.
     #[serde(rename = "selection.background")]
     pub selection: Option<SharedString>,
@@ -927,6 +933,8 @@ impl ThemeColor {
         // Other colors
         apply_background_color!(accent, fallback = tokens.secondary);
         apply_color!(accent_foreground, fallback = self.foreground);
+        apply_background_color!(select_active, fallback = tokens.accent);
+        apply_color!(select_active_foreground, fallback = self.foreground);
         apply_background_color!(accordion, fallback = tokens.background);
         apply_background_color!(
             group_box,
@@ -1228,6 +1236,37 @@ mod tests {
         assert_eq!(theme.window_radius, px(0.));
         theme.apply_config(&std::rc::Rc::new(config));
         assert_eq!(theme.window_radius, px(10.));
+    }
+
+    #[test]
+    fn test_apply_config_reads_the_dropdown_highlight_or_falls_back_to_accent() {
+        let theme_with = |colors: serde_json::Value| {
+            let config = serde_json::from_value::<ThemeConfig>(serde_json::json!({
+                "name": "Dropdown",
+                "mode": "light",
+                "colors": colors
+            }))
+            .unwrap();
+            let mut theme = Theme::default();
+            theme.apply_config(&std::rc::Rc::new(config));
+            theme
+        };
+
+        let theme = theme_with(serde_json::json!({
+            "accent.background": "#dbe5f0",
+            "select.active.background": "#a6caef",
+            "select.active.foreground": "#ffffff"
+        }));
+        assert_eq!(theme.select_active, try_parse_color("#a6caef").unwrap());
+        assert_eq!(theme.tokens.select_active.color, theme.select_active);
+        assert_eq!(
+            theme.select_active_foreground,
+            try_parse_color("#ffffff").unwrap()
+        );
+
+        let theme = theme_with(serde_json::json!({ "accent.background": "#dbe5f0" }));
+        assert_eq!(theme.select_active, theme.accent);
+        assert_eq!(theme.select_active_foreground, theme.foreground);
     }
 
     #[test]

@@ -118,8 +118,8 @@ impl RenderOnce for SearchableListItemElement {
                 })
             })
             .when(self.selected, |this| {
-                this.bg(cx.theme().tokens.accent)
-                    .text_color(cx.theme().accent_foreground)
+                this.bg(cx.theme().tokens.select_active)
+                    .text_color(cx.theme().select_active_foreground)
             })
             .when(self.disabled, |this| {
                 this.cursor_not_allowed()
