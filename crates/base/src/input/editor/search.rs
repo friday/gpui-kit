@@ -13,6 +13,7 @@ use super::{
 pub struct SearchMatcher {
     text: Rope,
     pub query: Option<AhoCorasick>,
+    case_insensitive: bool,
     matched_ranges: Rc<Vec<Range<usize>>>,
     current_match_ix: usize,
     replacing: bool,
@@ -332,6 +333,7 @@ impl SearchMatcher {
         Self {
             text: "".into(),
             query: None,
+            case_insensitive: false,
             matched_ranges: Rc::new(Vec::new()),
             current_match_ix: 0,
             replacing: false,
@@ -348,12 +350,18 @@ impl SearchMatcher {
         self.update_matches();
     }
 
+    /// A case-insensitive query ignores case in every script, so `å` finds
+    /// `Å`. A few letters whose lowercase takes more or fewer bytes, such as
+    /// the Kelvin sign, match only their own case.
     pub fn update_query(&mut self, query: &str, case_insensitive: bool) {
+        self.case_insensitive = case_insensitive;
         self.query = (!query.is_empty()).then(|| {
-            AhoCorasick::builder()
-                .ascii_case_insensitive(case_insensitive)
-                .build([query])
-                .expect("failed to build input search query")
+            let query = if case_insensitive {
+                lowercase_in_place(query.chars())
+            } else {
+                query.to_string()
+            };
+            AhoCorasick::new([query]).expect("failed to build input search query")
         });
         self.update_matches();
     }
@@ -428,7 +436,11 @@ impl SearchMatcher {
     fn update_matches(&mut self) {
         let mut ranges = Vec::new();
         if let Some(query) = &self.query {
-            let text = self.text.to_string();
+            let text = if self.case_insensitive {
+                lowercase_in_place(self.text.chars())
+            } else {
+                self.text.to_string()
+            };
             ranges.extend(
                 query
                     .stream_find_iter(text.as_bytes())
@@ -443,6 +455,22 @@ impl SearchMatcher {
         }
         self.replacing = false;
     }
+}
+
+/// Lowercases every character whose lowercase is a single character of the
+/// same UTF-8 length, and keeps the rest as they are. So a match found in the
+/// result covers the same bytes in the text it came from. The few letters this
+/// leaves alone, such as the Kelvin sign or `İ`, then match only their own case.
+fn lowercase_in_place(chars: impl Iterator<Item = char>) -> String {
+    chars
+        .map(|char| {
+            let mut lower = char.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(lower), None) if lower.len_utf8() == char.len_utf8() => lower,
+                _ => char,
+            }
+        })
+        .collect()
 }
 
 impl Iterator for SearchMatcher {
@@ -485,6 +513,31 @@ mod tests {
         matcher.begin_replacement();
         matcher.update(&Rope::from("foo FOO bar"));
         assert_eq!(matcher.current_match_index(), 1);
+    }
+
+    #[test]
+    fn ignoring_case_covers_letters_outside_ascii() {
+        let mut matcher = SearchMatcher::new();
+        matcher.update(&Rope::from("Åsa åsa ÅSA Ωμέγα ΩΜΈΓΑ"));
+        matcher.update_query("åsa", true);
+        assert_eq!(&*matcher.matched_ranges(), &[0..4, 5..9, 10..14]);
+        matcher.update_query("ΩΜΈΓΑ", true);
+        assert_eq!(matcher.len(), 2);
+
+        matcher.update_query("åsa", false);
+        assert_eq!(&*matcher.matched_ranges(), &[5..9]);
+    }
+
+    #[test]
+    fn a_letter_whose_lowercase_takes_other_bytes_matches_only_its_own_case() {
+        let mut matcher = SearchMatcher::new();
+        // The Kelvin sign lowercases to an ASCII `k`, one byte where it is
+        // three, so folding it would shift the match after it.
+        matcher.update(&Rope::from("\u{212A} k ök"));
+        matcher.update_query("ÖK", true);
+        assert_eq!(&*matcher.matched_ranges(), &[6..9]);
+        matcher.update_query("k", true);
+        assert_eq!(&*matcher.matched_ranges(), &[4..5, 8..9]);
     }
 
     #[test]
