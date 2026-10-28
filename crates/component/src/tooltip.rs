@@ -6,8 +6,8 @@ use std::{
 };
 
 use gpui::{
-    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, GlobalElementId,
-    IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
+    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, FocusHandle,
+    GlobalElementId, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 pub use gpui_base::TooltipDefaults;
@@ -213,9 +213,11 @@ impl ComponentTooltip {
     pub fn apply<E: ManagedTooltipExt>(self, el: E) -> E {
         let show_delay = self.show_delay;
         if let Some(builder) = self.builder {
-            el.managed_tooltip_with(None, show_delay, move |window, cx| builder(window, cx))
+            el.managed_tooltip_with(None, show_delay, None, move |window, cx| {
+                builder(window, cx)
+            })
         } else if let Some((text, action)) = self.text {
-            el.managed_tooltip_with(None, show_delay, move |window, cx| {
+            el.managed_tooltip_with(None, show_delay, None, move |window, cx| {
                 Tooltip::new(text.clone())
                     .when_some(action.clone(), |this, (action, context)| {
                         this.action(
@@ -243,35 +245,91 @@ struct TooltipTrigger {
     bounds: Bounds<Pixels>,
 }
 
-pub(crate) trait ManagedTooltipExt:
-    StatefulInteractiveElement + crate::ElementExt + Sized
-{
+/// Whether a trigger's tooltip was last shown or hidden for its keyboard focus.
+#[derive(Default, Clone, Copy)]
+struct TooltipFocusShown(bool);
+
+type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
+
+/// Shows or hides the tooltip of the trigger last prepainted into `trigger`,
+/// if it may: only the trigger that owns the tooltip hides it.
+fn request_tooltip(
+    trigger: &TooltipTrigger,
+    show: Option<(TooltipBuilder, Option<Placement>, Option<Duration>)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(id) = trigger.id.as_ref() else {
+        return;
+    };
+    let bounds = trigger.bounds;
+    let Some(overlay) = WindowState::tooltip_overlay_for_trigger(
+        id,
+        trigger.lifetime.clone(),
+        show.is_some(),
+        window,
+        cx,
+    ) else {
+        return;
+    };
+    overlay.update(cx, |overlay: &mut BaseTooltipOverlay, cx| match show {
+        Some((build, placement, show_delay)) => {
+            let request = BaseTooltipRequest::new(bounds, move |window, cx| build(window, cx));
+            let request = match placement {
+                Some(placement) => request.with_placement(placement),
+                None => request,
+            };
+            let request = match show_delay {
+                Some(delay) => request.with_show_delay(delay),
+                None => request,
+            };
+            overlay.request_show(request, window, cx);
+        }
+        None => overlay.request_hide(window, cx),
+    });
+}
+
+/// Gives a stateful element a tooltip shown through the window's tooltip
+/// overlay, the one every kit control shows its tooltip in. It waits for
+/// [`TooltipDefaults::show_delay`] on the first trigger, and moves to the next
+/// trigger at once within [`TooltipDefaults::grace_period`] of leaving one. A
+/// press dismisses it until the pointer leaves the trigger.
+pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Sized {
+    /// Shows the tooltip `build_tooltip` makes while the pointer rests on the element.
     fn managed_tooltip(
         self,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with(None, None, build_tooltip)
+        self.managed_tooltip_with(None, None, None, build_tooltip)
     }
 
+    /// Like [`Self::managed_tooltip`], preferring a side for the tooltip.
     fn managed_tooltip_at(
         self,
         placement: Placement,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with(Some(placement), None, build_tooltip)
+        self.managed_tooltip_with(Some(placement), None, None, build_tooltip)
     }
 
+    /// Like [`Self::managed_tooltip`], with a preferred side, a show delay of
+    /// its own, and the focus handle the element tracks. Given the handle, the
+    /// tooltip also shows at once while the keyboard has moved the focus onto
+    /// the element, and goes when the focus leaves it.
     fn managed_tooltip_with(
         self,
         preferred_placement: Option<Placement>,
         show_delay: Option<Duration>,
+        focus_handle: Option<&FocusHandle>,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        let build_tooltip = Rc::new(build_tooltip);
+        let build_tooltip: TooltipBuilder = Rc::new(build_tooltip);
         let trigger = Rc::new(RefCell::new(TooltipTrigger::default()));
         let trigger_writer = trigger.clone();
+        let focus_handle = focus_handle.cloned();
+        let build_for_focus = build_tooltip.clone();
 
-        self.on_prepaint(move |bounds, window, _| {
+        self.on_prepaint(move |bounds, window, cx| {
             let id = window.with_global_id("managed-tooltip-trigger".into(), |id, _| id.clone());
             // GPUI retains keyed element state for cached subtrees too, and
             // drops it after a frame that no longer contains the trigger.
@@ -280,55 +338,48 @@ pub(crate) trait ManagedTooltipExt:
                 (Rc::downgrade(&state.0), state)
             });
             *trigger_writer.borrow_mut() = TooltipTrigger {
-                id: Some(id),
+                id: Some(id.clone()),
                 lifetime,
                 bounds,
             };
+
+            let Some(focus_handle) = focus_handle else {
+                return;
+            };
+            let keyboard_focused =
+                focus_handle.is_focused(window) && window.last_input_was_keyboard();
+            let was_shown =
+                window.with_element_state(&id, |state: Option<TooltipFocusShown>, _| {
+                    (
+                        state.unwrap_or_default().0,
+                        TooltipFocusShown(keyboard_focused),
+                    )
+                });
+            if keyboard_focused == was_shown {
+                return;
+            }
+            // Not while prepainting: showing notifies the overlay, which is
+            // drawn in this same frame.
+            let trigger = trigger_writer.clone();
+            window.defer(cx, move |window, cx| {
+                let show = keyboard_focused
+                    .then(|| (build_for_focus, preferred_placement, Some(Duration::ZERO)));
+                request_tooltip(&trigger.borrow(), show, window, cx);
+            });
         })
         .on_hover({
             let trigger = trigger.clone();
-            let build_tooltip = build_tooltip.clone();
             move |hovered, window, cx| {
                 let trigger = trigger.borrow();
-                let Some(id) = trigger.id.as_ref() else {
-                    return;
-                };
-                let bounds = trigger.bounds;
                 // A press keeps the tooltip dismissed until the pointer leaves
                 // the trigger. This also drops the hover-enter that a click
                 // removing the trigger dispatches to the stale frame.
-                if *hovered && WindowState::is_tooltip_trigger_pressed(bounds, window, cx) {
+                if *hovered && WindowState::is_tooltip_trigger_pressed(trigger.bounds, window, cx) {
                     return;
                 }
-                if let Some(overlay) = WindowState::tooltip_overlay_for_trigger(
-                    id,
-                    trigger.lifetime.clone(),
-                    *hovered,
-                    window,
-                    cx,
-                ) {
-                    if *hovered {
-                        overlay.update(cx, |o: &mut BaseTooltipOverlay, cx| {
-                            let build = build_tooltip.clone();
-                            let request = BaseTooltipRequest::new(bounds, move |window, cx| {
-                                build(window, cx)
-                            });
-                            let request = match preferred_placement {
-                                Some(placement) => request.with_placement(placement),
-                                None => request,
-                            };
-                            let request = match show_delay {
-                                Some(delay) => request.with_show_delay(delay),
-                                None => request,
-                            };
-                            o.request_show(request, window, cx);
-                        });
-                    } else {
-                        overlay.update(cx, |o: &mut BaseTooltipOverlay, cx| {
-                            o.request_hide(window, cx);
-                        });
-                    }
-                }
+                let show =
+                    hovered.then(|| (build_tooltip.clone(), preferred_placement, show_delay));
+                request_tooltip(&trigger, show, window, cx);
             }
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -817,5 +868,34 @@ mod tests {
         draw(&mut cx);
         cx.run_until_parked();
         assert_tooltip_painted(&mut cx, 0, true);
+    }
+
+    #[gpui::test]
+    fn a_button_focused_from_the_keyboard_shows_its_tooltip_at_once(cx: &mut TestAppContext) {
+        let (mut cx, _, builds) = open_buttons(cx, [true, false], Duration::from_millis(500));
+        // A key press makes the next focus a keyboard one, as Tab does.
+        cx.simulate_keystrokes("shift");
+        cx.update(|window, cx| window.focus_next(cx));
+        draw(&mut cx);
+        cx.run_until_parked();
+        draw(&mut cx);
+        assert!(builds.get() > 0, "no show delay for a keyboard focus");
+        assert_tooltip_painted(&mut cx, 0, true);
+
+        cx.update(|window, cx| window.blur(cx));
+        draw(&mut cx);
+        cx.run_until_parked();
+        wait(&mut cx);
+        assert_tooltip_painted(&mut cx, 0, false);
+    }
+
+    #[gpui::test]
+    fn a_button_focused_by_a_click_does_not_show_its_tooltip_at_once(cx: &mut TestAppContext) {
+        let (mut cx, _, builds) = open_buttons(cx, [true, false], Duration::from_millis(500));
+        cx.simulate_click(point(px(50.), px(25.)), Default::default());
+        draw(&mut cx);
+        cx.run_until_parked();
+        draw(&mut cx);
+        assert_eq!(builds.get(), 0);
     }
 }

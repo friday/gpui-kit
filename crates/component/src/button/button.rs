@@ -877,12 +877,14 @@ impl RenderOnce for Button {
                 this.managed_tooltip_with(
                     tooltip_placement,
                     tooltip_show_delay,
+                    Some(&focus_handle),
                     move |window, cx| builder(window, cx),
                 )
             } else if let Some((tooltip, action)) = self.tooltip {
                 this.managed_tooltip_with(
                     tooltip_placement,
                     tooltip_show_delay,
+                    Some(&focus_handle),
                     move |window, cx| {
                         Tooltip::new(tooltip.clone())
                             .when_some(action.clone(), |this, (action, context)| {
