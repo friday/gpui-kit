@@ -282,47 +282,11 @@ impl Language {
                 languages.push("rust");
             }
             #[cfg(feature = "tree-sitter-javascript")]
-            Self::JavaScript => {
-                #[cfg(feature = "tree-sitter-jsdoc")]
-                languages.push("jsdoc");
-                languages.push("json");
-                #[cfg(feature = "tree-sitter-css")]
-                languages.push("css");
-                #[cfg(feature = "tree-sitter-html")]
-                languages.push("html");
-                #[cfg(feature = "tree-sitter-sql")]
-                languages.push("sql");
-                #[cfg(feature = "tree-sitter-typescript")]
-                languages.push("typescript");
-                languages.push("javascript");
-                #[cfg(feature = "tree-sitter-tsx")]
-                languages.push("tsx");
-                #[cfg(feature = "tree-sitter-yaml")]
-                languages.push("yaml");
-                #[cfg(feature = "tree-sitter-graphql")]
-                languages.push("graphql");
-            }
+            Self::JavaScript => push_script_injection_languages(&mut languages),
             #[cfg(feature = "tree-sitter-typescript")]
-            Self::TypeScript => {
-                #[cfg(feature = "tree-sitter-jsdoc")]
-                languages.push("jsdoc");
-                languages.push("json");
-                #[cfg(feature = "tree-sitter-css")]
-                languages.push("css");
-                #[cfg(feature = "tree-sitter-html")]
-                languages.push("html");
-                #[cfg(feature = "tree-sitter-sql")]
-                languages.push("sql");
-                languages.push("typescript");
-                #[cfg(feature = "tree-sitter-javascript")]
-                languages.push("javascript");
-                #[cfg(feature = "tree-sitter-tsx")]
-                languages.push("tsx");
-                #[cfg(feature = "tree-sitter-yaml")]
-                languages.push("yaml");
-                #[cfg(feature = "tree-sitter-graphql")]
-                languages.push("graphql");
-            }
+            Self::TypeScript => push_script_injection_languages(&mut languages),
+            #[cfg(feature = "tree-sitter-tsx")]
+            Self::Tsx => push_script_injection_languages(&mut languages),
             #[cfg(feature = "tree-sitter-astro")]
             Self::Astro => {
                 #[cfg(feature = "tree-sitter-html")]
@@ -537,8 +501,8 @@ impl Language {
             #[cfg(feature = "tree-sitter-tsx")]
             Self::Tsx => (
                 tree_sitter_typescript::LANGUAGE_TSX,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                "",
+                include_str!("languages/typescript/highlights.scm"),
+                include_str!("languages/javascript/injections.scm"),
                 tree_sitter_typescript::LOCALS_QUERY,
             ),
             #[cfg(feature = "tree-sitter-diff")]
@@ -617,6 +581,33 @@ impl Language {
             locals,
         )
     }
+}
+
+#[cfg(any(
+    feature = "tree-sitter-javascript",
+    feature = "tree-sitter-typescript",
+    feature = "tree-sitter-tsx"
+))]
+fn push_script_injection_languages(languages: &mut Vec<&'static str>) {
+    #[cfg(feature = "tree-sitter-jsdoc")]
+    languages.push("jsdoc");
+    languages.push("json");
+    #[cfg(feature = "tree-sitter-css")]
+    languages.push("css");
+    #[cfg(feature = "tree-sitter-html")]
+    languages.push("html");
+    #[cfg(feature = "tree-sitter-sql")]
+    languages.push("sql");
+    #[cfg(feature = "tree-sitter-typescript")]
+    languages.push("typescript");
+    #[cfg(feature = "tree-sitter-javascript")]
+    languages.push("javascript");
+    #[cfg(feature = "tree-sitter-tsx")]
+    languages.push("tsx");
+    #[cfg(feature = "tree-sitter-yaml")]
+    languages.push("yaml");
+    #[cfg(feature = "tree-sitter-graphql")]
+    languages.push("graphql");
 }
 
 #[cfg(test)]
