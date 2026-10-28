@@ -123,6 +123,12 @@ pub fn parse_theme_key(key: &str) -> ParsedKey {
         // Input
         "input" => ("Input", "Border", "input.border"),
         "input_placeholder" => ("Input", "Placeholder", "input.placeholder"),
+        "select_active" => ("Input", "Select Active", "select.active.background"),
+        "select_active_foreground" => (
+            "Input",
+            "Select Active Foreground",
+            "select.active.foreground",
+        ),
         "caret" => ("Input", "Caret", "caret"),
         "selection" => ("Input", "Selection", "selection.background"),
 

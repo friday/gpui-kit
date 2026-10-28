@@ -253,6 +253,14 @@
           "description": "Border color for inputs such as Input, Select, etc.",
           "type": ["string", "null"]
         },
+        "select.active.background": {
+          "description": "Background color for the highlighted item in a Select or Combobox dropdown.",
+          "type": ["string", "null"]
+        },
+        "select.active.foreground": {
+          "description": "Text color for the highlighted item in a Select or Combobox dropdown.",
+          "type": ["string", "null"]
+        },
         "input.placeholder": {
           "description": "Placeholder text color for inputs such as Input.",
           "type": ["string", "null"]
