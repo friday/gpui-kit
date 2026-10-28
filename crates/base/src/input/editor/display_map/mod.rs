@@ -12,6 +12,8 @@ mod inline_line;
 pub(crate) use inline_line::{InlineFragment, InputLine};
 mod fold_map;
 mod folding;
+mod tab_stops;
+pub(crate) use tab_stops::shape_line_with_tabs;
 mod text_wrapper;
 mod wrap_map;
 

@@ -260,6 +260,20 @@ impl DisplayMap {
         self.rebuild_fold_projection();
     }
 
+    /// Set the columns from one tab stop to the next.
+    pub(crate) fn set_tab_size(&mut self, tab_size: usize, cx: &mut App) {
+        let rewraps = self.rewraps();
+        self.wrap_map.set_tab_size(tab_size, cx);
+        if self.rewraps() != rewraps {
+            self.rebuild_fold_projection();
+        }
+    }
+
+    /// The distance between tab stops, in the font of the text.
+    pub(crate) fn tab_width(&self) -> Pixels {
+        self.wrap_map.tab_width()
+    }
+
     /// Ensure text is prepared (initializes wrapper if needed)
     pub fn ensure_text_prepared(&mut self, text: &Rope, cx: &mut App) {
         let did_initialize = self.wrap_map.ensure_text_prepared(text, cx);

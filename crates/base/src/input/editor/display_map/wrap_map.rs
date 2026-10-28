@@ -134,6 +134,14 @@ impl WrapMap {
         self.wrapper.set_font(font, font_size, cx);
     }
 
+    pub(super) fn set_tab_size(&mut self, tab_size: usize, cx: &mut App) {
+        self.wrapper.set_tab_size(tab_size, cx);
+    }
+
+    pub(super) fn tab_width(&self) -> Pixels {
+        self.wrapper.tab_width()
+    }
+
     /// Ensure text is prepared (initializes wrapper if needed)
     pub(super) fn ensure_text_prepared(&mut self, text: &Rope, cx: &mut App) -> bool {
         self.wrapper.prepare_if_need(text, cx)

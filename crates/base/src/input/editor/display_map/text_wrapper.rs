@@ -1,5 +1,6 @@
 use super::Filler;
 use super::inline_line::InputLine;
+use super::tab_stops::tab_advance;
 use gpui::Half;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -75,32 +76,30 @@ fn code_break_opportunities(text: &str) -> Vec<usize> {
 /// The widths are summed rather than each candidate row shaped, since that
 /// takes about a dozen shaping calls per line, most of a second for a long
 /// file.
+///
+/// `origin` is how far `text` starts from the start of its buffer line, which
+/// is where a tab measures its stops from.
 fn measured_wrap_boundaries(
     text: &str,
+    origin: Pixels,
     width: Pixels,
     wrapping_indent: WrappingIndent,
+    tab_width: Pixels,
     mut grapheme_width: impl FnMut(&str) -> Pixels,
 ) -> Vec<gpui::Boundary> {
-    let mut ends = Vec::with_capacity(text.len());
-    // `x[i]` is the width of the graphemes before grapheme `i`.
-    let mut x = Vec::with_capacity(text.len() + 1);
-    x.push(px(0.));
-    for (ix, grapheme) in text.grapheme_indices(true) {
-        ends.push(ix + grapheme.len());
-        x.push(x[x.len() - 1] + grapheme_width(grapheme));
-    }
-    if x[x.len() - 1] <= width + FIT_SLACK {
+    let (ends, x) = grapheme_positions(text, origin, tab_width, &mut grapheme_width);
+    if x[x.len() - 1] - x[0] <= width + FIT_SLACK {
         return Vec::new();
     }
     let indent = if wrapping_indent == WrappingIndent::Same {
         text.chars()
-            .take_while(|&c| c == ' ')
+            .take_while(|&c| matches!(c, ' ' | '\t'))
             .count()
             .min(gpui::LineWrapper::MAX_INDENT as usize)
     } else {
         0
     };
-    let indent_width = grapheme_width(" ") * indent as f32;
+    let indent_width = x[ends.partition_point(|&end| end <= indent)] - x[0];
     let lead_end = text.len() - text.trim_start_matches([' ', '\t']).len();
     let opportunities: Vec<usize> = unicode_linebreak::linebreaks(text)
         .map(|(ix, _)| ix)
@@ -164,6 +163,54 @@ fn measured_wrap_boundaries(
         start = end;
     }
     result
+}
+
+/// Where each grapheme of `text` ends, and `x[i]`, how far grapheme `i`
+/// starts from the start of the buffer line, with `text` starting at `origin`.
+/// `x` ends with where the text ends.
+fn grapheme_positions(
+    text: &str,
+    origin: Pixels,
+    tab_width: Pixels,
+    grapheme_width: &mut impl FnMut(&str) -> Pixels,
+) -> (Vec<usize>, Vec<Pixels>) {
+    let mut ends = Vec::with_capacity(text.len());
+    let mut x = Vec::with_capacity(text.len() + 1);
+    x.push(origin);
+    for (ix, grapheme) in text.grapheme_indices(true) {
+        ends.push(ix + grapheme.len());
+        let start = x[x.len() - 1];
+        let width = if grapheme == "\t" {
+            tab_advance(start, tab_width)
+        } else {
+            grapheme_width(grapheme)
+        };
+        x.push(start + width);
+    }
+    (ends, x)
+}
+
+fn shaped_width(
+    text_system: &gpui::WindowTextSystem,
+    font: &Font,
+    font_size: Pixels,
+    text: &str,
+) -> Pixels {
+    text_system
+        .layout_line(
+            text,
+            font_size,
+            &[gpui::TextRun {
+                len: text.len(),
+                font: font.clone(),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        )
+        .width
 }
 
 /// The shaped width of each grapheme met so far, in one font and size.
@@ -334,6 +381,10 @@ pub(crate) struct TextWrapper {
     /// If is none, it means the text is not wrapped
     wrap_width: Option<Pixels>,
     wrapping_indent: WrappingIndent,
+    /// Columns from one tab stop to the next.
+    tab_size: usize,
+    /// The distance between tab stops, `tab_size` spaces of the font.
+    tab_width: Pixels,
     /// The lines by split \n
     pub(crate) lines: SumTree<LineItem>,
 
@@ -359,6 +410,8 @@ impl TextWrapper {
             font_size,
             wrap_width,
             wrapping_indent: WrappingIndent::default(),
+            tab_size: 0,
+            tab_width: px(0.),
             lines: SumTree::new(&()),
             inline_metrics: Rc::from([]),
             grapheme_widths: GraphemeWidths::default(),
@@ -478,7 +531,36 @@ impl TextWrapper {
         self.font = font;
         self.font_size = font_size;
         self.grapheme_widths = GraphemeWidths::default();
+        self.tab_width = self.measure_tab_width(cx);
         self.update_all(&self.text.clone(), cx);
+    }
+
+    /// Sets the columns from one tab stop to the next. Only rows that wrap
+    /// depend on it, so an unwrapped text is not wrapped again.
+    pub(crate) fn set_tab_size(&mut self, tab_size: usize, cx: &mut App) {
+        if tab_size == self.tab_size {
+            return;
+        }
+
+        self.tab_size = tab_size;
+        self.tab_width = self.measure_tab_width(cx);
+        if self.wrap_width.is_some() && !self.wrap_pending {
+            self.update_all(&self.text.clone(), cx);
+        }
+    }
+
+    /// The distance between tab stops, which every row of the text is drawn with.
+    pub(crate) fn tab_width(&self) -> Pixels {
+        self.tab_width
+    }
+
+    fn measure_tab_width(&mut self, cx: &App) -> Pixels {
+        let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
+        let (font, font_size) = (&self.font, self.font_size);
+        let space = self.grapheme_widths.width(" ", |text| {
+            shaped_width(&text_system, font, font_size, text)
+        });
+        space * self.tab_size as f32
     }
 
     pub(crate) fn prepare_if_need(&mut self, text: &Rope, cx: &mut App) -> bool {
@@ -514,6 +596,7 @@ impl TextWrapper {
         let font = self.font.clone();
         let font_size = self.font_size;
         let wrapping_indent = self.wrapping_indent;
+        let tab_width = self.tab_width;
         let mut widths = std::mem::take(&mut self.grapheme_widths);
         self._update(
             changed_text,
@@ -543,29 +626,33 @@ impl TextWrapper {
                     offset = range.end;
                 }
                 if fragments.is_empty() {
+                    let mut grapheme_width = |grapheme: &str| {
+                        widths.width(grapheme, |text| {
+                            shaped_width(&text_system, &font, font_size, text)
+                        })
+                    };
+                    // The rest of a line wrapped on its own still has its tab
+                    // stops where the start of the line puts them.
+                    let column = changed_text.offset_to_point(line_start).column;
+                    let origin = if column == 0 {
+                        px(0.)
+                    } else {
+                        let before = changed_text.slice(line_start - column..line_start);
+                        let (_, x) = grapheme_positions(
+                            &Cow::<str>::from(before),
+                            px(0.),
+                            tab_width,
+                            &mut grapheme_width,
+                        );
+                        x[x.len() - 1]
+                    };
                     return measured_wrap_boundaries(
                         line_str,
+                        origin,
                         wrap_width,
                         wrapping_indent,
-                        |grapheme| {
-                            widths.width(grapheme, |text| {
-                                text_system
-                                    .layout_line(
-                                        text,
-                                        font_size,
-                                        &[gpui::TextRun {
-                                            len: text.len(),
-                                            font: font.clone(),
-                                            color: gpui::black(),
-                                            background_color: None,
-                                            underline: None,
-                                            strikethrough: None,
-                                        }],
-                                        None,
-                                    )
-                                    .width
-                            })
-                        },
+                        tab_width,
+                        grapheme_width,
                     );
                 }
                 if offset < line_str.len() {
@@ -1452,7 +1539,14 @@ mod tests {
                 &(start..previous.len()),
                 &inserted,
                 &mut |line, width, _| {
-                    measured_wrap_boundaries(line, width, WrappingIndent::None, measure)
+                    measured_wrap_boundaries(
+                        line,
+                        px(0.),
+                        width,
+                        WrappingIndent::None,
+                        px(4.),
+                        measure,
+                    )
                 },
             );
             let expected = if value.ends_with('s') {
@@ -1470,7 +1564,7 @@ mod tests {
     #[test]
     fn measured_wrap_preserves_words_graphemes_and_indentation() {
         let wrap = |text: &str, width, indent| {
-            measured_wrap_boundaries(text, px(width), indent, |_| px(1.))
+            measured_wrap_boundaries(text, px(0.), px(width), indent, px(4.), |_| px(1.))
                 .into_iter()
                 .map(|b| b.ix)
                 .collect::<Vec<_>>()
@@ -1491,10 +1585,17 @@ mod tests {
         // Tenths are not exact in binary, so ten of them sum a hair past
         // one: a row they fill must still count as fitting.
         let wrap = |text: &str, width| {
-            measured_wrap_boundaries(text, px(width), WrappingIndent::None, |_| px(0.1))
-                .into_iter()
-                .map(|b| b.ix)
-                .collect::<Vec<_>>()
+            measured_wrap_boundaries(
+                text,
+                px(0.),
+                px(width),
+                WrappingIndent::None,
+                px(4.),
+                |_| px(0.1),
+            )
+            .into_iter()
+            .map(|b| b.ix)
+            .collect::<Vec<_>>()
         };
         assert!(wrap("0123456789", 1.).is_empty());
         // The space after a row that fills the width hangs past the edge.
@@ -1508,10 +1609,17 @@ mod tests {
     #[test]
     fn measured_wrap_breaks_a_long_run_of_code_where_it_starts() {
         let wrap = |text: &str, width| {
-            measured_wrap_boundaries(text, px(width), WrappingIndent::None, |_| px(1.))
-                .into_iter()
-                .map(|b| b.ix)
-                .collect::<Vec<_>>()
+            measured_wrap_boundaries(
+                text,
+                px(0.),
+                px(width),
+                WrappingIndent::None,
+                px(4.),
+                |_| px(1.),
+            )
+            .into_iter()
+            .map(|b| b.ix)
+            .collect::<Vec<_>>()
         };
         // A call wider than a row starts on the indented row, not under it,
         // and breaks after an underscore or a bracket.
@@ -1528,6 +1636,23 @@ mod tests {
         // Doubled punctuation and closing marks stay together.
         assert_eq!(wrap("a_b&&cc", 4.), vec![2, 5]);
         assert_eq!(wrap("aaa(b)).c", 6.), vec![4]);
+    }
+
+    #[test]
+    fn measured_wrap_reaches_each_tab_to_its_stop() {
+        let wrap = |text: &str, origin: f32, width, indent| {
+            measured_wrap_boundaries(text, px(origin), px(width), indent, px(4.), |_| px(1.))
+                .into_iter()
+                .map(|b| (b.ix, b.next_indent))
+                .collect::<Vec<_>>()
+        };
+        // Each tab ends on a stop, so the line is ten wide, not eight.
+        assert_eq!(wrap("ab\tcd\tef", 0., 8., WrappingIndent::None), [(6, 0)]);
+        // A text that starts past the line start has its stops where the line puts them.
+        assert!(wrap("\tx", 2., 3., WrappingIndent::None).is_empty());
+        assert_eq!(wrap("\tx", 0., 3., WrappingIndent::None), [(1, 0)]);
+        // A leading tab is indentation four wide, which every later row keeps.
+        assert_eq!(wrap("\tabcdefgh", 0., 8., WrappingIndent::Same), [(5, 1)]);
     }
 
     #[test]
