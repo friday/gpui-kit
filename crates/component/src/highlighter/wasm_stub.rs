@@ -429,6 +429,10 @@ pub struct HighlightThemeStyle {
     pub editor_invisible: Option<gpui::Hsla>,
     #[serde(rename = "editor.gutter.background")]
     pub editor_gutter_background: Option<gpui::Hsla>,
+    #[serde(rename = "search.match_background")]
+    pub search_match_background: Option<gpui::Hsla>,
+    #[serde(rename = "search.active_match_background")]
+    pub search_active_match_background: Option<gpui::Hsla>,
     #[serde(flatten)]
     pub status: StatusColors,
     #[serde(rename = "syntax")]

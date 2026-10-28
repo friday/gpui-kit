@@ -118,6 +118,12 @@ pub struct InputEditorStyle {
     pub editor_invisible: Option<Hsla>,
     pub editor_active_line: Option<Hsla>,
     pub editor_gutter_background: Option<Hsla>,
+    /// Behind every find match. Unset, it is the selection colour with its
+    /// saturation taken out.
+    pub editor_search_match: Option<Hsla>,
+    /// Behind the current find match, in place of
+    /// [`Self::editor_search_match`]. Unset, it is the selection colour.
+    pub editor_active_search_match: Option<Hsla>,
     pub fold_icon_renderer: Option<FoldIconRenderer>,
 }
 
@@ -173,6 +179,8 @@ impl Default for InputEditorStyle {
             editor_invisible: None,
             editor_active_line: None,
             editor_gutter_background: None,
+            editor_search_match: None,
+            editor_active_search_match: None,
             fold_icon_renderer: None,
         }
     }

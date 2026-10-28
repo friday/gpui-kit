@@ -453,6 +453,12 @@ pub struct HighlightThemeStyle {
     /// Falls back to [`Self::editor_background`] when unset.
     #[serde(rename = "editor.gutter.background")]
     pub editor_gutter_background: Option<Hsla>,
+    /// Behind every find match in an editor.
+    #[serde(rename = "search.match_background")]
+    pub search_match_background: Option<Hsla>,
+    /// Behind the current find match in an editor.
+    #[serde(rename = "search.active_match_background")]
+    pub search_active_match_background: Option<Hsla>,
     #[serde(flatten)]
     pub status: StatusColors,
     #[serde(rename = "syntax")]

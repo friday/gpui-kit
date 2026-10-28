@@ -3342,11 +3342,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 s: 0.1,
                 ..editor_style.selection
             };
+            let search_match = editor_style
+                .editor_search_match
+                .unwrap_or(secondary_selection);
             for (path, is_active) in prepaint.search_match_paths.iter() {
-                window.paint_path(path.clone(), secondary_selection);
-
-                if *is_active {
-                    window.paint_path(path.clone(), editor_style.selection);
+                match (is_active, editor_style.editor_active_search_match) {
+                    (true, Some(active)) => window.paint_path(path.clone(), active),
+                    (true, None) => {
+                        window.paint_path(path.clone(), search_match);
+                        window.paint_path(path.clone(), editor_style.selection);
+                    }
+                    (false, _) => window.paint_path(path.clone(), search_match),
                 }
             }
 
