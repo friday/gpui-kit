@@ -124,6 +124,8 @@ pub struct InputEditorStyle {
     /// Behind the current find match, in place of
     /// [`Self::editor_search_match`]. Unset, it is the selection colour.
     pub editor_active_search_match: Option<Hsla>,
+    /// The placeholder's text. Unset, it is [`Self::muted_foreground`].
+    pub placeholder: Option<Hsla>,
     pub fold_icon_renderer: Option<FoldIconRenderer>,
 }
 
@@ -181,6 +183,7 @@ impl Default for InputEditorStyle {
             editor_gutter_background: None,
             editor_search_match: None,
             editor_active_search_match: None,
+            placeholder: None,
             fold_icon_renderer: None,
         }
     }

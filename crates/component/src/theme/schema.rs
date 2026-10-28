@@ -428,6 +428,9 @@ pub struct ThemeConfigColors {
     /// Border color for inputs such as Input, Select, etc.
     #[serde(rename = "input.border")]
     pub input: Option<SharedString>,
+    /// Placeholder text color for inputs such as Input.
+    #[serde(rename = "input.placeholder")]
+    pub input_placeholder: Option<SharedString>,
     /// Link text color.
     #[serde(rename = "link")]
     pub link: Option<SharedString>,
@@ -782,6 +785,7 @@ impl ThemeColor {
             muted_foreground,
             fallback = self.muted.blend(self.foreground.opacity(0.7))
         );
+        apply_color!(input_placeholder, fallback = self.muted_foreground);
 
         // Button colors
         let active_darken = if config.mode.is_dark() { 0.2 } else { 0.1 };

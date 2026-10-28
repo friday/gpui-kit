@@ -582,6 +582,7 @@ impl RenderOnce for Input {
                     .highlight_theme
                     .style
                     .search_active_match_background,
+                placeholder: Some(cx.theme().input_placeholder),
                 fold_icon_renderer: Some(Rc::new(|ix, is_folded| {
                     Button::new(("fold-icon", ix))
                         .ghost()
