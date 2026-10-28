@@ -92,6 +92,8 @@ actions!(
         OutdentInline,
         MoveUp,
         MoveDown,
+        MoveLineUp,
+        MoveLineDown,
         MoveLeft,
         MoveRight,
         MoveHome,
@@ -5264,6 +5266,8 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                             .on_action(window.listener_for(&entity, InputBaseState::outdent_inline))
                             .on_action(window.listener_for(&entity, InputBaseState::indent_block))
                             .on_action(window.listener_for(&entity, InputBaseState::outdent_block))
+                            .on_action(window.listener_for(&entity, InputBaseState::move_line_up))
+                            .on_action(window.listener_for(&entity, InputBaseState::move_line_down))
                     })
             })
             .on_action(window.listener_for(&entity, InputBaseState::left))
