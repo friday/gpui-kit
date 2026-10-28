@@ -1001,6 +1001,7 @@ mod tests {
     struct HandleStateHarness {
         seen: Rc<RefCell<Vec<ResizeHandleState>>>,
         covered: bool,
+        grab_padding: Option<Pixels>,
     }
 
     impl Render for HandleStateHarness {
@@ -1022,6 +1023,9 @@ mod tests {
                                 None
                             },
                         ))
+                        .when_some(self.grab_padding, |group, padding| {
+                            group.with_handle_grab_padding(padding)
+                        })
                         .child(resizable_panel().size(px(150.)).child(div().size_full()))
                         .child(
                             resizable_panel()
@@ -1050,6 +1054,7 @@ mod tests {
             move |_, _| HandleStateHarness {
                 seen,
                 covered: true,
+                grab_padding: None,
             }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1070,6 +1075,44 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_group_sets_how_far_its_handles_reach(cx: &mut TestAppContext) {
+        let seen: Rc<RefCell<Vec<ResizeHandleState>>> = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let seen = seen.clone();
+            move |_, _| HandleStateHarness {
+                seen,
+                covered: false,
+                grab_padding: Some(px(1.5)),
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let boundary = cx.debug_bounds("hs-second").unwrap().left();
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Inside the default 4 px reach, outside this group's 1.5 px.
+        cx.simulate_mouse_move(
+            point(boundary - px(3.), px(50.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(*seen.borrow(), vec![ResizeHandleState::Idle]);
+
+        cx.simulate_mouse_move(
+            point(boundary - px(1.), px(50.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            *seen.borrow(),
+            vec![ResizeHandleState::Idle, ResizeHandleState::Hovered]
+        );
+    }
+
+    #[gpui::test]
     fn a_handle_reports_the_press_and_the_drag_to_its_renderer(cx: &mut TestAppContext) {
         let seen: Rc<RefCell<Vec<ResizeHandleState>>> = Rc::new(RefCell::new(Vec::new()));
         let (_, cx) = cx.add_window_view({
@@ -1077,6 +1120,7 @@ mod tests {
             move |_, _| HandleStateHarness {
                 seen,
                 covered: false,
+                grab_padding: None,
             }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));

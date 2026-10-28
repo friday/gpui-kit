@@ -33,6 +33,7 @@ pub struct ResizablePanelGroup {
     children: Vec<ResizablePanel>,
     on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
     handle_appearance: Option<ResizeHandleRenderer>,
+    handle_grab_padding: Option<Pixels>,
 }
 
 impl ResizablePanelGroup {
@@ -46,6 +47,7 @@ impl ResizablePanelGroup {
             size: None,
             on_resize: Rc::new(|_, _, _| {}),
             handle_appearance: None,
+            handle_grab_padding: None,
         }
     }
 
@@ -55,6 +57,13 @@ impl ResizablePanelGroup {
     /// returns `None` for a given handle leaves the built-in line on it.
     pub fn with_handle_appearance(mut self, appearance: ResizeHandleRenderer) -> Self {
         self.handle_appearance = Some(appearance);
+        self
+    }
+
+    /// Set how far every divider's grab band in this group reaches past its
+    /// line, on each side. See [`super::ResizeHandle::grab_padding`].
+    pub fn with_handle_grab_padding(mut self, padding: Pixels) -> Self {
+        self.handle_grab_padding = Some(padding);
         self
     }
 
@@ -166,6 +175,7 @@ impl RenderOnce for ResizablePanelGroup {
                         panel.axis = self.axis;
                         panel.state = Some(state.clone());
                         panel.handle_appearance = self.handle_appearance.clone();
+                        panel.handle_grab_padding = self.handle_grab_padding;
                         panel
                     }),
             )
@@ -252,6 +262,7 @@ pub struct ResizablePanel {
     visible: bool,
     style: StyleRefinement,
     handle_appearance: Option<ResizeHandleRenderer>,
+    handle_grab_padding: Option<Pixels>,
     fixed: bool,
 }
 
@@ -268,6 +279,7 @@ impl ResizablePanel {
             visible: true,
             style: StyleRefinement::default(),
             handle_appearance: None,
+            handle_grab_padding: None,
             fixed: false,
         }
     }
@@ -399,6 +411,9 @@ impl RenderOnce for ResizablePanel {
                     resize_handle(("resizable-handle", ix), self.axis)
                         .when_some(self.handle_appearance.clone(), |handle, appearance| {
                             handle.with_appearance(appearance)
+                        })
+                        .when_some(self.handle_grab_padding, |handle, padding| {
+                            handle.grab_padding(padding)
                         })
                         .on_drag(DragPanel, move |drag_panel, _, _, cx| {
                             cx.stop_propagation();
