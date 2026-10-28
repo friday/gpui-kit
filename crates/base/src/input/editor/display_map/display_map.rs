@@ -323,7 +323,8 @@ impl DisplayMap {
         self.wrap_map.wrapper().rewraps()
     }
 
-    /// Leaves the wrap of the text set next to the next layout. See
+    /// Lets the next layout wrap the next text set, instead of wrapping it
+    /// when it is set. See
     /// [`TextWrapper::defer_wrap`](super::text_wrapper::TextWrapper::defer_wrap).
     pub(crate) fn defer_wrap(&mut self) {
         self.wrap_map.wrapper_mut().defer_wrap();
