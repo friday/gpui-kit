@@ -227,6 +227,10 @@ pub struct ThemeColor {
     pub secondary_foreground: Hsla,
     /// Hover secondary background color.
     pub secondary_hover: Hsla,
+    /// Background color for the highlighted item in a Select or Combobox dropdown.
+    pub select_active: Hsla,
+    /// Text color for the highlighted item in a Select or Combobox dropdown.
+    pub select_active_foreground: Hsla,
     /// Input selection background color.
     pub selection: Hsla,
     /// Sidebar background color.
@@ -490,6 +494,8 @@ define_theme_tokens! {
     secondary_active,
     secondary_foreground,
     secondary_hover,
+    select_active,
+    select_active_foreground,
     selection,
     sidebar,
     sidebar_accent,
