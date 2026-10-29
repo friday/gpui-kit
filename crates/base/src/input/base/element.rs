@@ -871,14 +871,18 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
-    /// The rows of every visible line `range` touches, from the gutter to the
-    /// right edge whatever the horizontal scroll. Lines apart by filler get a
-    /// band each, so the filler stays bare.
+    /// The rows of every visible line `range` touches, from the gutter, or the
+    /// editor's left edge where it shows no line numbers or fold icons, to its
+    /// right edge whatever the horizontal scroll. The band runs over the
+    /// editor's side padding, as a whole-line decoration in Monaco reaches the
+    /// edges. Lines apart by filler get a band each, so the filler stays bare.
     fn layout_whole_lines(
         range: &Range<usize>,
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
         input_bounds: &Bounds<Pixels>,
+        paddings: &Edges<Pixels>,
+        gutter: bool,
     ) -> Option<Path<Pixels>> {
         let mut bands: Vec<(Pixels, Pixels)> = Vec::new();
         let mut y = bounds.top() + last_layout.visible_top;
@@ -901,8 +905,12 @@ impl<M: InputModeKind> TextElement<M> {
         if bands.is_empty() {
             return None;
         }
-        let left = input_bounds.left() + last_layout.line_number_width;
-        let right = input_bounds.right();
+        let left = if gutter {
+            input_bounds.left() + last_layout.line_number_width
+        } else {
+            input_bounds.left() - paddings.left
+        };
+        let right = input_bounds.right() + paddings.right;
         let mut builder = gpui::PathBuilder::fill();
         for (top, bottom) in &bands {
             builder.move_to(point(left, *top));
@@ -962,6 +970,8 @@ impl<M: InputModeKind> TextElement<M> {
                         last_layout,
                         bounds,
                         input_bounds,
+                        &state.editor_paddings,
+                        state.mode.line_number() || state.mode.is_folding(),
                     ) {
                         fills.push((path, color));
                     }
@@ -4633,6 +4643,55 @@ mod tests {
             let edge = |y: Pixels| apart.vertices.iter().any(|v| v.xy_position.y == y);
             assert!(edge(apart.bounds.top() + height));
             assert!(edge(apart.bounds.top() + height * 3));
+        });
+    }
+
+    #[gpui::test]
+    fn a_whole_line_decoration_runs_over_the_side_padding_without_line_numbers_or_folds(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let mut held = None;
+        let window = cx.open_window(size(px(240.), px(140.)), |window, cx| {
+            let state = cx.new(|cx| {
+                let mut state = EditorState::new(window, cx)
+                    .line_number(false)
+                    .folding(false)
+                    .default_value("one\ntwo");
+                state.set_editor_paddings(Edges {
+                    top: px(4.),
+                    right: px(30.),
+                    bottom: px(4.),
+                    left: px(6.),
+                });
+                state
+            });
+            held = Some(state.clone());
+            DecorationHarness(state)
+        });
+        let editor = held.unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_range_decorations_collection(
+                    vec![RangeDecoration::new(0..3).with_style(RangeDecorationStyle::WholeLine)],
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+            let state = editor.read(cx);
+            let layout = state.last_layout.as_ref().unwrap();
+            let (fills, _) = TextElement::new(editor.clone()).layout_range_decorations(
+                layout,
+                &state.input_bounds,
+                &state.input_bounds,
+                window,
+                state.input_bounds,
+                cx,
+            );
+            let band = &fills[0].0.bounds;
+            assert_eq!(band.left(), state.input_bounds.left() - px(6.));
+            assert_eq!(band.right(), state.input_bounds.right() + px(30.));
         });
     }
 
