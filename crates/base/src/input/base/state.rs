@@ -486,6 +486,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) selecting: bool,
     /// Anchor point of an in-progress columnar (block) selection.
     pub(super) column_select_start: Option<ColumnarPoint>,
+    /// Whether the selection in progress was started on the line numbers,
+    /// which select whole lines.
+    pub(super) selecting_lines: bool,
     /// The selection a long press made, with its handles and edit menu.
     pub(super) touch_selection: super::touch::TouchSelection,
     pub(crate) disabled: bool,
@@ -937,6 +940,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             last_bounds: None,
             last_selected_range: None,
             column_select_start: None,
+            selecting_lines: false,
             last_cursor: None,
             scroll_handle: ScrollHandle::new(),
             scroll_bounce: crate::ScrollBounce::enabled_by_default(),
@@ -2650,10 +2654,19 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         self.selecting = true;
+        self.selecting_lines = false;
         let (offset, line_end_affinity, columns_past_line_end) =
             self.resolve_mouse_position(event.position);
 
         if M::on_click(self, event, offset, window, cx) {
+            return;
+        }
+
+        if event.button == MouseButton::Left
+            && event.modifiers == gpui::Modifiers::default()
+            && self.is_on_line_numbers(event.position)
+        {
+            self.select_lines_from(offset, cx);
             return;
         }
 
@@ -2727,6 +2740,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.active_selection_mut().reversed = false;
         }
         self.selecting = false;
+        self.selecting_lines = false;
         self.selected_word_range = None;
         self.column_select_start = None;
         self.auto_scroll.stop();
@@ -3507,6 +3521,16 @@ impl<M: InputModeKind> InputBaseState<M> {
         (offset, line_end_affinity)
     }
 
+    /// Whether `position` is on the line numbers, short of the gap between
+    /// them and the text.
+    fn is_on_line_numbers(&self, position: Point<Pixels>) -> bool {
+        self.mode.line_number()
+            && self.last_layout.as_ref().is_some_and(|layout| {
+                position.x
+                    < self.input_bounds.left() + layout.line_number_width - self.line_number_gap
+            })
+    }
+
     /// Resolve a mouse position to a text offset, the caret affinity to use for it, and
     /// how many columns the pointer sits past the end of that row.
     ///
@@ -3938,6 +3962,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         if let Some(start) = self.column_select_start {
             let end = ColumnarPoint::new(offset, columns_past_line_end);
             self.build_columnar_selection(start, end, cx);
+        } else if self.selecting_lines {
+            self.select_to(self.line_drag_offset(offset), cx);
         } else {
             self.select_to_with_affinity(offset, line_end_affinity, cx);
         }
@@ -3955,6 +3981,8 @@ impl<M: InputModeKind> InputBaseState<M> {
                     if let Some(start) = state.column_select_start {
                         let end = ColumnarPoint::new(offset, columns_past_line_end);
                         state.build_columnar_selection(start, end, cx);
+                    } else if state.selecting_lines {
+                        state.select_to(state.line_drag_offset(offset), cx);
                     } else {
                         state.select_to_with_affinity(offset, line_end_affinity, cx);
                     }
@@ -9607,6 +9635,65 @@ mod tests {
         view.input.read_with(&cx, |state, _| {
             assert!(!state.selecting);
             assert!(state.column_select_start.is_none());
+        });
+    }
+
+    /// Where the line numbers of `row` are, for a press on them.
+    fn on_line_number(
+        cx: &mut VisualTestContext,
+        input: &Entity<InputBaseState<EditorMode>>,
+        row: usize,
+    ) -> Point<Pixels> {
+        input.read_with(cx, |state, _| {
+            let layout = state.last_layout.as_ref().unwrap();
+            assert!(state.mode.line_number());
+            point(
+                state.input_bounds.left() + px(2.),
+                state.last_bounds.unwrap().top() + layout.line_height * (row as f32 + 0.5),
+            )
+        })
+    }
+
+    #[gpui::test]
+    fn a_press_on_a_line_number_selects_its_line_with_the_line_break(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        setup_cursors(&mut cx, &view.input, "|one\ntwo\nthree");
+        let two = on_line_number(&mut cx, &view.input, 1);
+        cx.simulate_mouse_down(two, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(two, MouseButton::Left, gpui::Modifiers::default());
+        view.input.read_with(&cx, |state, _| {
+            assert_eq!(state.selected_range(), 4..8);
+            assert!(!state.selecting_lines);
+        });
+    }
+
+    #[gpui::test]
+    fn a_drag_over_the_line_numbers_selects_every_line_it_crosses_either_way(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        setup_cursors(&mut cx, &view.input, "|one\ntwo\nthree\nfour");
+        let [one, two, three] = [0, 1, 2].map(|row| on_line_number(&mut cx, &view.input, row));
+        let none = gpui::Modifiers::default();
+
+        cx.simulate_mouse_down(two, MouseButton::Left, none);
+        cx.simulate_mouse_move(three, MouseButton::Left, none);
+        view.input.read_with(&cx, |state, _| {
+            assert_eq!(state.selected_range(), 4..14);
+            assert!(!state.active_selection().reversed);
+        });
+        cx.simulate_mouse_move(one, MouseButton::Left, none);
+        view.input.read_with(&cx, |state, _| {
+            assert_eq!(state.selected_range(), 0..8);
+            assert!(state.active_selection().reversed);
+        });
+        cx.simulate_mouse_up(one, MouseButton::Left, none);
+        view.input.read_with(&cx, |state, _| {
+            assert_eq!(state.selected_range(), 0..8);
         });
     }
 

@@ -53,6 +53,34 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.selected_word_range = None;
         cx.notify()
     }
+
+    /// Select the line at `offset` with its line break, for a press on its
+    /// number, and keep it selected while a drag from there takes in more.
+    pub(super) fn select_lines_from(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let row = self.text.offset_to_point(offset).row;
+        self.selections.remove_all_but_active();
+        self.active_selection_mut().reversed = false;
+        self.cursor_line_end_affinity = false;
+        self.set_selection(
+            self.text.line_start_offset(row),
+            self.text.line_start_offset(row + 1),
+        );
+        self.selected_word_range = Some(*self.active_selection());
+        self.selecting_lines = true;
+        cx.notify()
+    }
+
+    /// Where a drag from the line numbers to `offset` ends: after the line
+    /// break of the pointer's line below the line it started on, and at the
+    /// start of the pointer's line above it.
+    pub(super) fn line_drag_offset(&self, offset: usize) -> usize {
+        let row = self.text.offset_to_point(offset).row;
+        let start = self.text.line_start_offset(row);
+        match self.selected_word_range {
+            Some(first) if start < first.start => start,
+            _ => self.text.line_start_offset(row + 1),
+        }
+    }
 }
 
 struct TextSelector;

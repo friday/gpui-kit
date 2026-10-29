@@ -558,6 +558,7 @@ impl<M: InputModeKind> TextElement<M> {
                 state.update(cx, |state, _| {
                     state.auto_scroll.stop();
                     state.selecting = false;
+                    state.selecting_lines = false;
                     state.column_select_start = None;
                 });
             }
