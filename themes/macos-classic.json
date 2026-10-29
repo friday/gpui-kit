@@ -172,7 +172,7 @@
         "tab.active.background": "#131313",
         "tab.foreground": "#8F8F8F",
         "title_bar.background": "#171717",
-        "selection.background": "#3F638B",
+        "selection.background": "#3F638B4D",
         "base.blue": "#419CFF",
         "base.cyan": "#07FDD3",
         "base.green": "#30D158",
