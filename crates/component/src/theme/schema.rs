@@ -1034,7 +1034,10 @@ impl ThemeColor {
 
         // TODO: Apply default fallback colors to highlight.
 
-        // Ensure opacity for list_active, table_active, selection.
+        // Ensure opacity for list_active, table_active, and a selection the
+        // theme leaves to the primary colour. A selection the theme names is
+        // drawn as named: it sits under the text it covers, so a solid one
+        // still reads, as the desktop's own text selection does.
         let clamp_alpha = |raw: Option<&str>, color: Hsla, background: Background, max: f32| {
             let base = color.a;
             let target = base.min(max);
@@ -1060,12 +1063,10 @@ impl ThemeColor {
             tokens.table_active.background,
             0.2,
         );
-        (self.selection, tokens.selection) = clamp_alpha(
-            colors.selection.as_deref(),
-            self.selection,
-            tokens.selection.background,
-            0.3,
-        );
+        if colors.selection.is_none() {
+            (self.selection, tokens.selection) =
+                clamp_alpha(None, self.selection, tokens.selection.background, 0.3);
+        }
 
         tokens
     }
@@ -1362,10 +1363,6 @@ mod tests {
                 // Gradient with a faint `from` stop and an opaque `to` stop: the
                 // `to` stop must be clamped independently, not left at full alpha.
                 "table.active.background": "linear-gradient(#bfdbfe33, #3b82f6)",
-                // Gradient with a transparent `from` stop: the opaque `to` stop
-                // must still be clamped (the `base == 0` factor fallback used to
-                // leave it untouched).
-                "selection.background": "linear-gradient(#3b82f600, #3b82f6)",
             }
         }))
         .unwrap();
@@ -1388,17 +1385,33 @@ mod tests {
                 linear_color_stop(blue.alpha(0.2), 1.),
             )
         );
+    }
 
-        // Gradient: a transparent `from` stop stays transparent while the opaque
-        // `to` stop is still clamped to 0.3 (selection cap).
-        let clear = try_parse_color("#3b82f600").unwrap();
+    #[test]
+    fn test_apply_config_keeps_a_named_selection_and_caps_the_primary_fallback() {
+        let named = serde_json::from_value::<ThemeConfig>(serde_json::json!({
+            "name": "Named",
+            "mode": "light",
+            "colors": { "selection.background": "#a6caef" }
+        }))
+        .unwrap();
+        let mut theme = Theme::default();
+        theme.apply_config(&std::rc::Rc::new(named));
+        let blue = try_parse_color("#a6caef").unwrap();
+        assert_eq!(theme.selection, blue);
+        assert_eq!(theme.tokens.selection.background, blue.into());
+
+        let fallback = serde_json::from_value::<ThemeConfig>(serde_json::json!({
+            "name": "Fallback",
+            "mode": "light",
+            "colors": { "primary.background": "#3b82f6" }
+        }))
+        .unwrap();
+        let mut theme = Theme::default();
+        theme.apply_config(&std::rc::Rc::new(fallback));
         assert_eq!(
-            theme.tokens.selection.background,
-            linear_gradient(
-                180.,
-                linear_color_stop(clear.alpha(clear.a.min(0.3)), 0.),
-                linear_color_stop(blue.alpha(0.3), 1.),
-            )
+            theme.selection,
+            try_parse_color("#3b82f6").unwrap().alpha(0.3)
         );
     }
 }

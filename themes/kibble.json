@@ -36,7 +36,7 @@
         "success.background": "#5c6ee0",
         "warning.background": "#e0c85c",
         "info.background": "#5cd1e0",
-        "selection.background": "#9ba787",
+        "selection.background": "#9ba7874d",
         "tab.active.background": "#0e100a",
         "tab.active.foreground": "#f7f7f7",
         "tab.foreground": "#969696",
