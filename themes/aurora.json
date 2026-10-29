@@ -92,7 +92,7 @@
         "secondary.active.background": "#CBD5E1",
         "secondary.foreground": "#0F172A",
         "secondary.hover.background": "#E2E8F0",
-        "selection.background": "#55A0FC",
+        "selection.background": "#55A0FC4D",
         "sidebar.background": "#F8FAFC",
         "sidebar.accent.background": "#E2E8F0",
         "sidebar.accent.foreground": "#0F172A",
