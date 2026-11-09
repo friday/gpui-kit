@@ -16,6 +16,9 @@ pub enum RangeDecorationStyle {
     /// Draw a continuous one-pixel frame around the visual range.
     #[default]
     Frame,
+    /// Fill every row of each line the range touches, across the text area,
+    /// like Monaco's `isWholeLine`.
+    WholeLine,
 }
 
 /// A geometric decoration over a UTF-8 byte range.
