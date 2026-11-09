@@ -130,25 +130,58 @@ mod tests {
         }
     }
 
-    #[gpui::test]
-    fn a_resize_that_rewraps_is_announced(cx: &mut TestAppContext) {
-        let line = "word ".repeat(40);
-        let (editor, mut cx) = open(cx, &line, vec![]);
+    fn count_rewraps(
+        editor: &Entity<EditorState>,
+        cx: &mut VisualTestContext,
+    ) -> std::rc::Rc<std::cell::Cell<usize>> {
         let rewraps = std::rc::Rc::new(std::cell::Cell::new(0));
         let seen = rewraps.clone();
         cx.update(|_, cx| {
-            cx.subscribe(&editor, move |_, event: &InputEvent, _| {
+            cx.subscribe(editor, move |_, event: &InputEvent, _| {
                 if matches!(event, InputEvent::Rewrap) {
                     seen.set(seen.get() + 1);
                 }
             })
             .detach();
         });
+        rewraps
+    }
+
+    #[gpui::test]
+    fn a_resize_that_rewraps_is_announced(cx: &mut TestAppContext) {
+        let line = "word ".repeat(40);
+        let (editor, mut cx) = open(cx, &line, vec![]);
+        let rewraps = count_rewraps(&editor, &mut cx);
         let rows = editor.read_with(&cx, |state, _| state.text_rows_per_line());
         cx.simulate_resize(size(px(300.), px(400.)));
         cx.run_until_parked();
         assert_eq!(rewraps.get(), 1);
         let narrow = editor.read_with(&cx, |state, _| state.text_rows_per_line());
         assert!(narrow[0] > rows[0], "{narrow:?} after {rows:?}");
+    }
+
+    #[gpui::test]
+    fn text_set_unwrapped_wraps_once_at_the_next_layout(cx: &mut TestAppContext) {
+        let (editor, mut cx) = open(cx, "one", vec![]);
+        let rewraps = count_rewraps(&editor, &mut cx);
+        // A thousand lines take a wider gutter than one, so the next layout
+        // wraps at a width of its own.
+        let text = vec!["word ".repeat(40); 1000].join("\n");
+        let passes = editor.read_with(&cx, |state, _| state.display_map.rewraps());
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_value_unwrapped(text, window, cx);
+                assert!(state.is_wrap_pending());
+                assert!(state.text_rows_per_line().iter().all(|&rows| rows == 1));
+            })
+        });
+
+        cx.run_until_parked();
+        editor.read_with(&cx, |state, _| {
+            assert!(!state.is_wrap_pending());
+            assert_eq!(state.display_map.rewraps(), passes + 1, "one pass");
+            assert!(state.text_rows_per_line()[0] > 1);
+        });
+        assert_eq!(rewraps.get(), 1);
     }
 }
