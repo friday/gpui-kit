@@ -1,11 +1,12 @@
 use crate::{ActiveTheme, Disableable, StyledExt, h_flex};
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, MouseButton,
+    AnyElement, AnyView, App, ClickEvent, ElementId, InteractiveElement, IntoElement, MouseButton,
     ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
     StyleRefinement, Styled, Window, accesskit::Toggled, prelude::FluentBuilder as _,
 };
 use gpui_base::TestSupportExt as _;
 use smallvec::SmallVec;
+use std::rc::Rc;
 
 #[derive(IntoElement)]
 pub(crate) struct MenuItemElement {
@@ -17,6 +18,7 @@ pub(crate) struct MenuItemElement {
     checked: Option<bool>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
+    tooltip: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyView>>,
     children: SmallVec<[AnyElement; 2]>,
 }
 
@@ -33,6 +35,7 @@ impl MenuItemElement {
             checked: None,
             on_click: None,
             on_hover: None,
+            tooltip: None,
             children: SmallVec::new(),
         }
     }
@@ -76,6 +79,11 @@ impl MenuItemElement {
     #[allow(unused)]
     pub fn on_hover(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_hover = Some(Box::new(handler));
+        self
+    }
+
+    pub(crate) fn tooltip(mut self, build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView>) -> Self {
+        self.tooltip = Some(build);
         self
     }
 }
@@ -125,6 +133,9 @@ impl RenderOnce for MenuItemElement {
             .refine_style(&self.style)
             .when_some(self.on_hover, |this, on_hover| {
                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))
+            })
+            .when_some(self.tooltip, |this, build| {
+                this.tooltip(move |window, cx| build(window, cx))
             })
             .when(!self.disabled, |this| {
                 // Not `group_hover` on the item's own group: GPUI styles an
