@@ -3780,12 +3780,22 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
         }
 
+        // The user's selection sits below the indent guides and the
+        // application's decorations, as in Monaco, so a see-through line
+        // tint, like a diff's, tints the selection rather than being covered
+        // by it.
+        let window_active = window.is_window_active();
+        if window_active {
+            for path in prepaint.selection_paths.drain(..) {
+                window.paint_path(path, editor_style.selection);
+            }
+        }
+
         // Paint indent guides
         if let Some(path) = prepaint.indent_guides_path.take() {
             window.paint_path(path, editor_style.border.opacity(0.85));
         }
 
-        // Application decorations sit below the user's selection.
         for (path, color) in &prepaint.range_decoration_fills {
             window.paint_path(path.clone(), *color);
         }
@@ -3793,8 +3803,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window.paint_path(path.clone(), *color);
         }
 
-        // Paint selections
-        if window.is_window_active() {
+        if window_active {
             let secondary_selection = Hsla {
                 s: 0.1,
                 ..editor_style.selection
@@ -3811,10 +3820,6 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     }
                     (false, _) => window.paint_path(path.clone(), search_match),
                 }
-            }
-
-            for path in prepaint.selection_paths.drain(..) {
-                window.paint_path(path, editor_style.selection);
             }
 
             // Paint hover highlight
