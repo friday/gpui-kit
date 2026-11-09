@@ -8,21 +8,24 @@ use ropey::Rope;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation as _;
 
-/// Deterministic fractional glyph widths include multibyte graphemes and contextual ligatures.
-fn measure(text: &str) -> Pixels {
-    let width: f32 = text
+/// Deterministic fractional width of one grapheme, including multibyte graphemes and tabs.
+/// A per-grapheme width cannot see its neighbours, so contextual shaping has no meaning here.
+fn measure(grapheme: &str) -> Pixels {
+    px(if grapheme == "\t" {
+        28.25
+    } else if grapheme.is_ascii() {
+        7.125
+    } else {
+        15.75
+    })
+}
+
+/// The oracle still measures whole substrings; add the same per-grapheme widths over them.
+fn oracle_measure(text: &str) -> Pixels {
+    px(text
         .graphemes(true)
-        .map(|g| {
-            if g == "\t" {
-                28.25
-            } else if g.is_ascii() {
-                7.125
-            } else {
-                15.75
-            }
-        })
-        .sum();
-    px(width - text.matches("fi").count() as f32 * 0.875)
+        .map(|grapheme| f32::from(measure(grapheme)))
+        .sum::<f32>())
 }
 
 /// Compare complete logical-to-visual row geometry, including continuation indentation.
@@ -60,15 +63,22 @@ fn oversized_words_keep_measurement_work_local() {
                 for width in [80., 256., 512.] {
                     let mut measured_bytes = 0;
                     let mut longest_probe = 0;
-                    let measured = measured_wrap(&text, px(width), indent, |part| {
-                        measured_bytes += part.len();
-                        longest_probe = longest_probe.max(part.len());
-                        px(part.len() as f32)
+                    let mut graphemes_shaped = 0;
+                    let measured = measured_wrap(&text, px(width), indent, |grapheme| {
+                        graphemes_shaped += 1;
+                        measured_bytes += grapheme.len();
+                        longest_probe = longest_probe.max(grapheme.len());
+                        px(grapheme.len() as f32)
                     });
                     let original = measured_wrap_boundaries(&text, px(width), indent, |part| {
                         px(part.len() as f32)
                     });
                     assert_eq!(measured.boundaries, original);
+                    assert_eq!(
+                        graphemes_shaped,
+                        text.graphemes(true).count(),
+                        "each grapheme is shaped once, and nothing else is"
+                    );
                     assert!(
                         longest_probe <= 4 * width as usize,
                         "a {width}-pixel row measured a {longest_probe}-byte suffix"
@@ -106,7 +116,7 @@ fn cached_resize_matches_cold_unicode_wrapping_at_fractional_thresholds() {
                 let mut cold = TextWrapper::new(font("test"), px(14.), Some(px(width)));
                 cold.wrapping_indent = indent;
                 cold._update(&text, &(0..text.len()), &text, &mut |line, width, _| {
-                    measured_wrap_boundaries(line, width, indent, measure)
+                    measured_wrap_boundaries(line, width, indent, oracle_measure)
                 });
                 assert_eq!(
                     rows(&cached),
@@ -175,11 +185,13 @@ fn assert_cold(cached: &TextWrapper, cx: &mut App) {
     assert_eq!(rows(cached), rows(&cold));
 }
 
-/// Native shaping must preserve the original breaks across ligatures, fallback fonts and thresholds.
+/// Summed grapheme widths must reuse the cold rows across ligatures, fallback fonts and
+/// thresholds, and every summed row must still fit when shaped natively. Kerning and mid-row
+/// tabs overshoot the native width, so rows wrap earlier, never later.
 /// Windows headless mode uses no-op fonts, so borrow its real text system without opening a window.
 #[cfg(target_os = "windows")]
 #[test]
-fn native_cached_resize_matches_original_word_and_grapheme_breaks() {
+fn native_cached_resize_matches_cold_sums_and_fits_natively() {
     let platform = gpui_platform::current_platform(false);
     let cx = TestAppContext::build_with_text_system(
         gpui::TestDispatcher::new(0),
@@ -206,10 +218,9 @@ fn native_cached_resize_matches_original_word_and_grapheme_breaks() {
                         for tab_size in [2, 8, 4, 0, 4] {
                             cached.set_tab_size(tab_size, cx);
                             assert_cold(&cached, cx);
-                            let measure = |text: &str| {
-                                native_width(&system, &font, font_size, tab_size, text)
-                            };
-                            let threshold = f32::from(measure("ab\tc\t"));
+                            let threshold = f32::from(native_width(
+                                &system, &font, font_size, tab_size, "ab\tc\t",
+                            ));
                             let widths = (1..500).step_by(7).map(|n| n as f32).chain([
                                 threshold,
                                 threshold.next_down(),
@@ -217,17 +228,31 @@ fn native_cached_resize_matches_original_word_and_grapheme_breaks() {
                             ]);
                             for width in widths {
                                 cached.set_wrap_width(Some(px(width)), cx);
-                                let mut original =
+                                let mut cold =
                                     TextWrapper::new(font.clone(), font_size, Some(px(width)));
-                                original.wrapping_indent = indent;
-                                original._update(&source, &(0..0), &source, &mut |line, width, _| {
-                                    measured_wrap_boundaries(line, width, indent, measure)
-                                });
+                                cold.wrapping_indent = indent;
+                                cold.tab_size = tab_size;
+                                cold.update(&source, &(0..0), &source, cx);
                                 assert_eq!(
                                     rows(&cached),
-                                    rows(&original),
+                                    rows(&cold),
                                     "font={family}, size={font_size:?}, tab_size={tab_size}, indent={indent:?}, width={width}, text={text:?}"
                                 );
+                                for (row, line) in cold.iter_lines().enumerate() {
+                                    let line_text = source.line(row).to_string();
+                                    for range in &line.wrapped_lines {
+                                        assert!(
+                                            native_width(
+                                                &system,
+                                                &font,
+                                                font_size,
+                                                tab_size,
+                                                &line_text[range.clone()]
+                                            ) <= px(width),
+                                            "font={family}, size={font_size:?}, tab_size={tab_size}, indent={indent:?}, width={width}, text={text:?}"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
