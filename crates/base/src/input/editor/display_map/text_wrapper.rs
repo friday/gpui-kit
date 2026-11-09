@@ -432,6 +432,9 @@ pub(crate) struct TextWrapper {
     fillers: Vec<Filler>,
     /// Counts the passes that wrapped every line again.
     rewraps: usize,
+    /// Every line is one row until the next wrap width is set, which wraps
+    /// them all. See [`Self::defer_wrap`].
+    wrap_pending: bool,
     _initialized: bool,
 }
 
@@ -450,6 +453,7 @@ impl TextWrapper {
             grapheme_widths: GraphemeWidths::default(),
             fillers: Vec::new(),
             rewraps: 0,
+            wrap_pending: false,
             _initialized: false,
         }
     }
@@ -458,6 +462,17 @@ impl TextWrapper {
     #[inline]
     pub(crate) fn is_prepared(&self) -> bool {
         self._initialized
+    }
+
+    /// Lays out the text and its edits one row per line from now on, until
+    /// the next [`Self::set_wrap_width`] wraps every line at the width it is
+    /// given, even the width it already has.
+    pub(crate) fn defer_wrap(&mut self) {
+        self.wrap_pending = self.wrap_width.is_some();
+    }
+
+    pub(crate) fn is_wrap_pending(&self) -> bool {
+        self.wrap_pending
     }
 
     #[inline]
@@ -532,12 +547,13 @@ impl TextWrapper {
     }
 
     pub(crate) fn set_wrap_width(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {
-        if wrap_width == self.wrap_width {
+        if wrap_width == self.wrap_width && !self.wrap_pending {
             return;
         }
 
-        let width_only = self.wrap_width.is_some() && wrap_width.is_some();
+        let width_only = self.wrap_width.is_some() && wrap_width.is_some() && !self.wrap_pending;
         self.wrap_width = wrap_width;
+        self.wrap_pending = false;
         if width_only
             && self
                 .lines
@@ -548,7 +564,15 @@ impl TextWrapper {
             return;
         }
         let text = self.text.clone();
-        self.update_wrapped(&text, &(0..text.len()), &text, width_only, cx);
+        if width_only {
+            self.update_wrapped(&text, &(0..text.len()), &text, width_only, cx);
+            // The early return above fires when every line already reuses
+            // this width. Reaching here remeasured at least one line, so the
+            // wrap counts and is announced like a full rewrap.
+            self.rewraps += 1;
+        } else {
+            self.update_all(&text, cx);
+        }
     }
 
     pub(crate) fn set_wrapping_indent(&mut self, wrapping_indent: WrappingIndent, cx: &mut App) {
@@ -815,7 +839,7 @@ impl TextWrapper {
             .row;
 
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
-        let wrap_width = self.wrap_width;
+        let wrap_width = self.wrap_width.filter(|_| !self.wrap_pending);
         let mut previous = self.lines.iter();
         debug_assert!(!reuse_widths || (new_start_row == 0 && range == &(0..self.text.len())));
         let line_count = changed_text.lines_len();
