@@ -1899,8 +1899,14 @@ impl PlatformWindow for WaylandWindow {
 
     fn activate(&self) {
         let state = self.borrow();
-        if let (Some(activation), Some(app_id)) = (&state.globals.activation, state.app_id.clone())
-        {
+        let Some(activation) = &state.globals.activation else {
+            return;
+        };
+        if let Some(token) = crate::linux::take_next_activation_token() {
+            activation.activate(token, &state.surface);
+            return;
+        }
+        if let Some(app_id) = state.app_id.clone() {
             let token = activation.get_activation_token(
                 &state.globals.qh,
                 PendingActivation::Window(state.surface.id()),
