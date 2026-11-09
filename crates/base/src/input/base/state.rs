@@ -539,6 +539,7 @@ pub struct InputBaseState<M: InputModeKind> {
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+    pub(super) scrollbar_visible: bool,
     /// Overview ruler marks in display rows, kept between frames.
     pub(super) overview_ruler_rows: std::cell::RefCell<OverviewRulerRows>,
     /// The widest measured unwrapped line width and what it was measured for.
@@ -846,7 +847,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// thumb inside every text field, which is a control the field does not
     /// have.
     pub(crate) fn shows_scrollbar(&self) -> bool {
-        self.is_multi_line()
+        self.is_multi_line() && self.scrollbar_visible
     }
 
     pub fn is_multi_line(&self) -> bool {
@@ -1032,6 +1033,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             overscroll: Overscroll::default(),
             scroll_size: gpui::size(px(0.), px(0.)),
             editor_scrollbar_snapshot: Cell::new(None),
+            scrollbar_visible: true,
             overview_ruler_rows: Default::default(),
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
@@ -7155,6 +7157,11 @@ mod tests {
         multi
             .input
             .update(cx, |state, _| assert!(state.shows_scrollbar()));
+
+        let hidden = InputView::build_textarea(cx, |state| state.scrollbar_visible(false));
+        hidden
+            .input
+            .update(cx, |state, _| assert!(!state.shows_scrollbar()));
     }
 
     #[gpui::test]
@@ -12723,6 +12730,16 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
     pub fn set_searchable(&mut self, searchable: bool, cx: &mut Context<Self>) {
         self.searchable = searchable;
         cx.notify();
+    }
+
+    /// Set whether the scrollbar is visible, default is `true`.
+    ///
+    /// The scroll position still moves with the wheel, the caret and the
+    /// scroll handle. Turn it off where the owner draws a scrollbar of its
+    /// own, like an overview map shared by editors that track one handle.
+    pub fn scrollbar_visible(mut self, visible: bool) -> Self {
+        self.scrollbar_visible = visible;
+        self
     }
 
     /// Set the soft wrap mode, default is true.
