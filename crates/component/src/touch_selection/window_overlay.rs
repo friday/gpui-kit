@@ -44,7 +44,7 @@ impl WindowTouchSelectionOverlay {
 impl Render for WindowTouchSelectionOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if TextSelection::touch_selection(window, cx).is_none() {
-            return div();
+            return div().into_any_element();
         }
         // The handles are painted by the text that owns them, where they
         // are covered by whatever covers the text; only the menu floats.
@@ -56,6 +56,9 @@ impl Render for WindowTouchSelectionOverlay {
             EditMenuItem::new(t!("Input.Select All"), Self::select_all),
         ])
         .on_paint(|bounds, window, cx| TextSelection::register_touch_ui(bounds, window, cx));
-        div().children(overlay.into_elements(window, cx))
+        // Mounted by the root outside every dialog, for text selected in
+        // whichever one has the user.
+        gpui_base::in_top_layer(div().children(overlay.into_elements(window, cx)))
+            .into_any_element()
     }
 }

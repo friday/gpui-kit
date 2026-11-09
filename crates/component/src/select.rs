@@ -1,8 +1,8 @@
 use gpui::{
     AnyElement, App, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, Length, ParentElement, Render,
-    RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window,
-    deferred, div, prelude::FluentBuilder, px, rems,
+    RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder, px, rems,
 };
 use gpui_base::TestSupportExt as _;
 use rust_i18n::t;
@@ -633,39 +633,34 @@ where
                         ),
                 )
                 .when(self.state.open, |this| {
-                    this.child(
-                        deferred(crate::popover::dropdown_popup(
-                            ("select-popup", cx.entity_id()),
-                            bounds,
-                            v_flex()
-                                .occlude()
-                                .map(|this| match self.state.menu_width {
-                                    Length::Auto => this.w(bounds.size.width),
-                                    Length::Definite(w) => this.w(w),
-                                })
-                                .popover_style(cx)
-                                .child(
-                                    List::new(&self.state.list)
-                                        .when_some(
-                                            self.state.search_placeholder.clone(),
-                                            |this, placeholder| {
-                                                this.search_placeholder(placeholder)
-                                            },
-                                        )
-                                        .with_size(self.state.size)
-                                        .max_h(self.state.menu_max_h)
-                                        .when_some(self.state.scroll_bounce, |list, on| {
-                                            list.scroll_bounce(on)
-                                        })
-                                        .paddings(Edges::all(DROPDOWN_LIST_PADDING)),
-                                )
-                                .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-                                    this.escape(&Cancel, window, cx);
-                                })),
-                            cx,
-                        ))
-                        .with_priority(gpui_base::POPUP_PRIORITY),
-                    )
+                    this.child(gpui_base::deferred_popup(crate::popover::dropdown_popup(
+                        ("select-popup", cx.entity_id()),
+                        bounds,
+                        v_flex()
+                            .occlude()
+                            .map(|this| match self.state.menu_width {
+                                Length::Auto => this.w(bounds.size.width),
+                                Length::Definite(w) => this.w(w),
+                            })
+                            .popover_style(cx)
+                            .child(
+                                List::new(&self.state.list)
+                                    .when_some(
+                                        self.state.search_placeholder.clone(),
+                                        |this, placeholder| this.search_placeholder(placeholder),
+                                    )
+                                    .with_size(self.state.size)
+                                    .max_h(self.state.menu_max_h)
+                                    .when_some(self.state.scroll_bounce, |list, on| {
+                                        list.scroll_bounce(on)
+                                    })
+                                    .paddings(Edges::all(DROPDOWN_LIST_PADDING)),
+                            )
+                            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                                this.escape(&Cancel, window, cx);
+                            })),
+                        cx,
+                    )))
                 }),
         )
     }

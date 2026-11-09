@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ClickEvent, Corners, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, RenderOnce, SharedString, Styled as _, Window, canvas, deferred,
-    div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Pixels, RenderOnce, SharedString, Styled as _, Window, canvas, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_base::{Placement, Positioner};
 
@@ -125,7 +125,7 @@ impl RenderOnce for EditMenu {
                 .into_iter()
                 .chain([button])
         });
-        deferred(
+        gpui_base::deferred_popup(
             Positioner::side(self.anchor)
                 .placement(Placement::Top)
                 .offset(px(8.))
@@ -151,6 +151,5 @@ impl RenderOnce for EditMenu {
                         }),
                 ),
         )
-        .with_priority(gpui_base::POPUP_PRIORITY)
     }
 }

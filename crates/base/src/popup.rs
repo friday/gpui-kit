@@ -3,16 +3,19 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{
     Anchor, AnyElement, App, Bounds, Div, ElementId, InteractiveElement, Interactivity,
     IntoElement, ParentElement, Pixels, Point, RenderOnce, StatefulInteractiveElement,
-    StyleRefinement, Styled, Window, canvas, deferred, div, point, px,
+    StyleRefinement, Styled, Window, canvas, div, point, px,
 };
 
-use crate::{Positioner, ResolvedPosition, StyledExt as _};
+use crate::{Positioner, ResolvedPosition, StyledExt as _, deferred_popup};
 
 /// Distance kept between a popup and the window edge.
 const WINDOW_MARGIN: Pixels = px(8.);
 
-/// Deferred paint priority for interactive surfaces that must appear above dialogs.
-pub const POPUP_PRIORITY: usize = 100;
+/// Former paint priority of every popup surface. It paints over every dialog,
+/// whatever layer drew the popup, so a popup of the window covers a dialog
+/// opened over it.
+#[deprecated(note = "use `deferred_popup`, which paints in the layer that draws it")]
+pub const POPUP_PRIORITY: usize = crate::stacking::TOP_LAYER;
 
 #[derive(Default)]
 struct PopupAnchorState {
@@ -189,17 +192,14 @@ impl RenderOnce for Popup {
         } else {
             positioner
         };
-        root.child(
-            deferred(
-                positioner
-                    .margin(WINDOW_MARGIN)
-                    // The host blocks the mouse, so no caller has to remember:
-                    // what a popup covers belongs to the popup.
-                    .occlude()
-                    .child(content),
-            )
-            .with_priority(POPUP_PRIORITY),
-        )
+        root.child(deferred_popup(
+            positioner
+                .margin(WINDOW_MARGIN)
+                // The host blocks the mouse, so no caller has to remember:
+                // what a popup covers belongs to the popup.
+                .occlude()
+                .child(content),
+        ))
     }
 }
 

@@ -1,8 +1,9 @@
 //! Caret-anchored popups positioned from the input's current-frame geometry.
 //!
 //! The input stashes fresh caret geometry in its prepaint
-//! ([`PrepaintCaretGeometry`]). Popups live inside `deferred()`, so their
-//! prepaint runs after the input's prepaint but before its paint; resolving
+//! ([`PrepaintCaretGeometry`]). Popups live inside
+//! [`gpui_base::deferred_popup`], so their prepaint runs after the input's
+//! prepaint but before its paint; resolving
 //! the anchor there puts the popup at the current frame's caret instead of
 //! the previous frame's.
 
@@ -33,7 +34,7 @@ pub(crate) fn caret_popup_anchor(geometry: PrepaintCaretGeometry) -> Point<Pixel
 /// The content is built in prepaint (not render) from the resolved anchor,
 /// so position, hitboxes, accessibility bounds, and width/layout decisions
 /// are all consistent with the current frame's caret. Always use inside
-/// `deferred()` so the prepaint runs after the input's prepaint.
+/// [`gpui_base::deferred_popup`] so the prepaint runs after the input's prepaint.
 pub(crate) struct CaretAnchoredPopup {
     editor: WeakEntity<EditorState>,
     build: Box<dyn Fn(Point<Pixels>, &mut Window, &mut App) -> AnyElement>,

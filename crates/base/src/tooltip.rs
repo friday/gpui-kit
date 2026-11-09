@@ -430,8 +430,8 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_priority_exceeds_popup_layer() {
-        assert!(TOOLTIP_PRIORITY > crate::POPUP_PRIORITY);
+    fn tooltip_priority_exceeds_every_layer() {
+        assert!(TOOLTIP_PRIORITY > crate::ABOVE_LAYERS_PRIORITY);
     }
 
     #[gpui::test]

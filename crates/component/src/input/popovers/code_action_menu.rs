@@ -3,8 +3,8 @@ use std::rc::Rc;
 use gpui::{
     Action, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity, EventEmitter,
     Half as _, InteractiveElement as _, IntoElement, ParentElement, Pixels, Render, RenderOnce,
-    Styled, StyledText, Subscription, WeakEntity, Window, deferred, div, prelude::FluentBuilder,
-    px, relative,
+    Styled, StyledText, Subscription, WeakEntity, Window, div, prelude::FluentBuilder, px,
+    relative,
 };
 use gpui_base::TestSupportExt as _;
 pub(crate) use gpui_base::input::CodeActionItem;
@@ -300,7 +300,7 @@ impl Render for CodeActionMenu {
         let list = self.list.clone();
         let menu = cx.weak_entity();
 
-        deferred(CaretAnchoredPopup::new(
+        gpui_base::deferred_popup(CaretAnchoredPopup::new(
             self.state.clone(),
             move |anchor, window, cx| {
                 let max_width = MAX_MENU_WIDTH.min(window.bounds().size.width - anchor.x);
@@ -327,7 +327,6 @@ impl Render for CodeActionMenu {
                     .into_any_element()
             },
         ))
-        .with_priority(gpui_base::POPUP_PRIORITY)
         .into_any_element()
     }
 }

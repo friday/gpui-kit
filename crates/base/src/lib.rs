@@ -67,6 +67,7 @@ mod select;
 mod selectable_text;
 mod sheet;
 pub mod slider;
+mod stacking;
 mod state_style;
 mod styled;
 mod switch;
@@ -150,6 +151,7 @@ pub use otp_input::{OtpEvent, OtpInput, OtpState};
 pub use pagination::{Pagination, PaginationItem, PaginationState};
 pub use plot::PlotMotion;
 pub use popover::{Popover, PopoverState};
+#[allow(deprecated)]
 pub use popup::{POPUP_PRIORITY, Popup};
 pub use positioner::{Align, Positioner, ResolvedPosition};
 pub use progress::{Progress, ProgressIndicator, ProgressTrack};
@@ -176,6 +178,7 @@ pub use select::Select;
 pub use selectable_text::SelectableText;
 pub use sheet::Sheet;
 pub use slider::{Slider, SliderIndicator, SliderThumb, SliderTrack};
+pub use stacking::{ABOVE_LAYERS_PRIORITY, deferred_popup, in_top_layer};
 pub use state_style::StateStyle;
 #[cfg(any(feature = "inspector", debug_assertions))]
 pub use styled::styled_ext_reflection_methods;

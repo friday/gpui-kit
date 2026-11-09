@@ -22,7 +22,7 @@ use gpui::{
     actions, deferred, div, hsla, prelude::FluentBuilder as _, px,
 };
 use gpui_base::{
-    ColorTokens, Dialog, POPUP_PRIORITY, Placement, RadiusTokens, Sheet, SpacingTokens,
+    ABOVE_LAYERS_PRIORITY, ColorTokens, Dialog, Placement, RadiusTokens, Sheet, SpacingTokens,
     StyledExt as _, TextSelection, TextSelectionLayer, Theme, Toast, ToastManager, ToastMotion,
     ToastOptions, ToastStack, ToastStackState, TooltipOverlay, TooltipTransition,
     active_focus_trap,
@@ -52,10 +52,11 @@ const TOAST_VISIBLE_LIMIT: usize = 3;
 
 /// Paint priority of the toast layer.
 ///
-/// Above [`POPUP_PRIORITY`] because a toast reports the outcome of the action
-/// the user just took, and an open dropdown or dialog is exactly the situation
-/// where that outcome matters most. It is the one layer that is never occluded.
-const TOAST_PRIORITY: usize = POPUP_PRIORITY + 1;
+/// Above every dialog and popup because a toast reports the outcome of the
+/// action the user just took, and an open dropdown or dialog is exactly the
+/// situation where that outcome matters most. It is the one layer that is
+/// never occluded.
+const TOAST_PRIORITY: usize = ABOVE_LAYERS_PRIORITY;
 
 /// Width of the toast column. The single geometric constant in this module:
 /// toasts are anchored to a viewport corner, so unlike every other overlay here
@@ -80,8 +81,9 @@ const TOAST_WIDTH: gpui::Pixels = px(320.);
 ///    from inside a sheet must be readable, and a sheet raised under a dialog
 ///    must not cover it.
 /// 3. **Dialog stack** — in open order, oldest at the bottom. Each dialog is
-///    deferred at `10 + index`, so a later dialog always paints over an earlier
-///    one regardless of the order the elements were built in.
+///    deferred by its index, so a later dialog always paints over an earlier
+///    one and the popups open in it, regardless of the order the elements were
+///    built in.
 /// 4. **Toasts** — above the overlay stack, at the root's toast priority.
 /// 5. **Tooltip** — one layer, always topmost. Base defers it above every
 ///    priority the root uses, so it is the one layer whose order is not the

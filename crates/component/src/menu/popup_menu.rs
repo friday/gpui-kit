@@ -11,7 +11,7 @@ use gpui::{
     Action, Anchor, AnyElement, AnyView, App, AppContext, Bounds, Context, DismissEvent, Edges,
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
+    Styled, WeakEntity, Window, anchored, div, prelude::FluentBuilder, px, rems,
 };
 use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
 use gpui_base::TestSupportExt as _;
@@ -352,24 +352,6 @@ pub struct PopupMenu {
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
 
-    /// Paint priority for this menu layer. The top-level menu starts at 1 and
-    /// each nested submenu increments it, so deeper levels are always drawn on
-    /// top of shallower ones. This fixes background content (e.g. the
-    /// underlying list) bleeding through multi-level submenus, which happens
-    /// when nested `anchored` popovers share the same paint order.
-    ///
-    /// The top-level menu relies on its container (e.g. `Popover`,
-    /// `ContextMenu`) to `deferred`-draw it, and each submenu is deferred once
-    /// in `render_item` with `priority + 1`. Keeping a single deferred layer
-    /// per level matters because GPUI caps nested deferred depth (see
-    /// `prepaint_deferred_draws`).
-    ///
-    /// Deferring is also what lets a submenu open from a `scrollable` menu:
-    /// GPUI paints a deferred draw at the window level with no inherited
-    /// content mask, so the items container's `overflow_y_scroll` clip never
-    /// reaches it, while the scroll offset is still baked into its anchor.
-    priority: usize,
-
     _subscriptions: Vec<Subscription>,
 }
 
@@ -395,7 +377,6 @@ impl PopupMenu {
             section_headings: false,
             size: Size::default(),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
-            priority: gpui_base::POPUP_PRIORITY,
             _subscriptions: vec![],
         }
     }
@@ -771,10 +752,8 @@ impl PopupMenu {
     ) -> Self {
         let submenu = PopupMenu::build(window, cx, f);
         let parent_menu = cx.entity().downgrade();
-        let parent_priority = self.priority;
         submenu.update(cx, |view, _| {
             view.parent_menu = Some(parent_menu);
-            view.priority = parent_priority + 1;
         });
 
         self.menu_items.push(
@@ -791,7 +770,7 @@ impl PopupMenu {
     }
 
     /// Replace all menu items by re-running a builder on this menu, keeping its
-    /// identity (focus, parent menu, layer priority).
+    /// identity (focus and parent menu).
     ///
     /// For menus whose content arrives asynchronously after the menu is shown,
     /// e.g. swapping a "loading…" placeholder for the loaded items:
@@ -1526,7 +1505,14 @@ impl PopupMenu {
                         let (anchor, left) = self.submenu_anchor;
                         let is_bottom_pos =
                             matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight);
-                        deferred(
+                        // One deferred draw per level, since GPUI caps how deep
+                        // they nest, which paints over the menu that holds it.
+                        // Deferring also lets a submenu open from a `scrollable`
+                        // menu: GPUI paints a deferred draw with no inherited
+                        // content mask, so the items' `overflow_y_scroll` clip
+                        // never reaches it, while the scroll offset is still
+                        // baked into its anchor.
+                        gpui_base::deferred_popup(
                             anchored()
                                 .anchor(anchor)
                                 .child(
@@ -1541,7 +1527,6 @@ impl PopupMenu {
                                 )
                                 .snap_to_window_with_margin(Edges::all(EDGE_PADDING)),
                         )
-                        .with_priority(self.priority + 1)
                     })
                 }),
         }
@@ -1583,13 +1568,11 @@ impl Render for PopupMenu {
         // Wire them here so the dismiss chain, click-outside checks and keyboard
         // navigation treat them the same as `submenu()`-built children.
         let parent = cx.entity().downgrade();
-        let parent_priority = self.priority;
         for item in &self.menu_items {
             if let PopupMenuItem::Submenu { menu, .. } = item {
                 if menu.read(cx).parent_menu.is_none() {
                     menu.update(cx, |menu, _| {
                         menu.parent_menu = Some(parent.clone());
-                        menu.priority = parent_priority + 1;
                     });
                 }
             }
