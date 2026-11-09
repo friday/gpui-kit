@@ -319,17 +319,10 @@ impl FoldMap {
         for fold in &self.folded {
             // Hide wrap rows from (start_line + 1) to (end_line - 1) (inclusive)
             // Both the first line and last line of the fold remain visible
-            let hide_start_line = fold.start_line + 1;
-            let hide_end_line = fold.end_line.saturating_sub(1);
-
-            if hide_start_line > hide_end_line {
-                continue; // No middle lines to hide (0 or 1 lines between start and end)
-            }
-
-            // Get wrap_row ranges for the hidden buffer lines
-            let start_wrap_row = wrap_map.buffer_line_to_first_wrap_row(hide_start_line);
-            let end_wrap_row = if hide_end_line + 1 < wrap_map.buffer_line_count() {
-                wrap_map.buffer_line_to_first_wrap_row(hide_end_line + 1)
+            // The filler below the first line stands inside the fold, so it hides too.
+            let start_wrap_row = wrap_map.buffer_line_to_wrap_row_range(fold.start_line).end;
+            let end_wrap_row = if fold.end_line < wrap_map.buffer_line_count() {
+                wrap_map.buffer_line_to_first_wrap_row(fold.end_line)
             } else {
                 wrap_row_count
             };

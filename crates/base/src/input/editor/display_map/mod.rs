@@ -38,6 +38,34 @@ impl BufferPoint {
     }
 }
 
+/// Empty rows that stand above one buffer line and push it down.
+///
+/// Filler keeps two editors level, as the sides of a split diff are, by
+/// giving one side room where the other has more rows. `line` runs from 0
+/// to the line count inclusive: filler above line 0 stands above all text,
+/// and filler above the line count stands below the last line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Filler {
+    line: usize,
+    rows: usize,
+}
+
+impl Filler {
+    pub fn new(line: usize, rows: usize) -> Self {
+        Self { line, rows }
+    }
+
+    /// The buffer line the filler stands above.
+    pub fn line(&self) -> usize {
+        self.line
+    }
+
+    /// How many rows of filler, each one line height tall.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+}
+
 /// Position after soft-wrapping but before folding (internal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct WrapPoint {
