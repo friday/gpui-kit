@@ -152,7 +152,7 @@ pub use pagination::{Pagination, PaginationItem, PaginationState};
 pub use plot::PlotMotion;
 pub use popover::{Popover, PopoverState};
 #[allow(deprecated)]
-pub use popup::{POPUP_PRIORITY, Popup};
+pub use popup::{ArrowTarget, POPUP_PRIORITY, Popup, PopupArrow};
 pub use positioner::{Align, Positioner, ResolvedPosition};
 pub use progress::{Progress, ProgressIndicator, ProgressTrack};
 pub use radio::{Radio, RadioStyles};
