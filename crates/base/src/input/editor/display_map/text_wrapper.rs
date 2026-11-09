@@ -1,10 +1,9 @@
 use super::Filler;
 use super::inline_line::InputLine;
-mod measurements;
 mod wrap_width;
 use gpui::Half;
-use measurements::WidthMeasurements;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use wrap_width::{MeasuredWrap, WidthRange};
@@ -108,15 +107,39 @@ fn measured_wrap_boundaries(
     result
 }
 
-/// Preserve the measured comparisons that make these breaks valid at nearby widths.
+/// Choose Unicode line-break opportunities, measuring a row as the sum of the
+/// shaped widths of its graphemes. Oversized words fall back to complete
+/// graphemes, never UTF-8 bytes.
+///
+/// The widths are summed rather than each candidate row shaped, since that
+/// takes about a dozen shaping calls per line, most of a second for a long
+/// file. Every summed comparison is still recorded, so width-only reflows
+/// keep reusing rows whose decisions hold.
 fn measured_wrap(
     text: &str,
     width: Pixels,
     wrapping_indent: WrappingIndent,
-    mut measure: impl FnMut(&str) -> Pixels,
+    mut grapheme_width: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
     #[cfg(test)]
     wrap_width::MEASURED_LINES.with(|count| count.set(count.get() + 1));
+    // `x[i]` is the summed width of the graphemes before grapheme `i`.
+    let mut x = Vec::with_capacity(text.len() + 1);
+    x.push(px(0.));
+    let mut ends = Vec::with_capacity(text.len());
+    for (ix, grapheme) in text.grapheme_indices(true) {
+        ends.push(ix + grapheme.len());
+        x.push(x[x.len() - 1] + grapheme_width(grapheme));
+    }
+    if x[x.len() - 1] <= width {
+        // A fitting line is summed and left alone, with no line breaking asked for.
+        let mut valid_widths = WidthRange::all();
+        valid_widths.fits(x[x.len() - 1], width, px(0.));
+        return MeasuredWrap {
+            boundaries: Vec::new(),
+            valid_widths,
+        };
+    }
     let mut valid_widths = WidthRange::all();
     let indent = if wrapping_indent == WrappingIndent::Same {
         text.chars()
@@ -126,11 +149,7 @@ fn measured_wrap(
     } else {
         0
     };
-    let indent_width = measure(&text[..indent]);
-    let ends: Vec<usize> = text
-        .grapheme_indices(true)
-        .map(|(ix, grapheme)| ix + grapheme.len())
-        .collect();
+    let indent_width = x[indent];
     let opportunities: Vec<usize> = unicode_linebreak::linebreaks(text)
         .map(|(ix, _)| ix)
         .filter(|ix| ends.binary_search(ix).is_ok())
@@ -146,7 +165,7 @@ fn measured_wrap(
         };
         // Probe legal word breaks first. Character-fit changes inside the same word do not
         // change the result, so they must not invalidate a cached line during a divider drag.
-        // Bound word probes before shaping: a single word can span the entire remaining line.
+        // Bound word probes to a local window: a single word can span the entire remaining line.
         // Beyond this local window, use the original exponential grapheme search instead.
         const MAX_WORD_PROBE_GRAPHEMES: usize = 256;
         let word_probe_end = ends[first..]
@@ -158,8 +177,12 @@ fn measured_wrap(
                 if limit.is_some_and(|limit| end > limit) {
                     return None;
                 }
+                // The row is summed from the cached grapheme widths instead of shaped.
+                let to = ends
+                    .binary_search(&end)
+                    .expect("wrap candidates end on grapheme boundaries");
                 Some(valid_widths.fits(
-                    measure(&text[start..end]),
+                    x[to + 1] - x[first],
                     available,
                     if start == 0 { px(0.) } else { indent_width },
                 ))
@@ -217,6 +240,37 @@ fn measured_wrap(
     MeasuredWrap {
         boundaries: result,
         valid_widths,
+    }
+}
+
+/// The shaped width of each grapheme met so far, in one font and size.
+struct GraphemeWidths {
+    ascii: [Option<Pixels>; 128],
+    other: HashMap<Box<str>, Pixels>,
+}
+
+impl Default for GraphemeWidths {
+    fn default() -> Self {
+        Self {
+            ascii: [None; 128],
+            other: HashMap::default(),
+        }
+    }
+}
+
+impl GraphemeWidths {
+    fn width(&mut self, grapheme: &str, shape: impl FnOnce(&str) -> Pixels) -> Pixels {
+        if let &[byte] = grapheme.as_bytes()
+            && byte.is_ascii()
+        {
+            return *self.ascii[byte as usize].get_or_insert_with(|| shape(grapheme));
+        }
+        if let Some(&width) = self.other.get(grapheme) {
+            return width;
+        }
+        let width = shape(grapheme);
+        self.other.insert(grapheme.into(), width);
+        width
     }
 }
 
@@ -370,8 +424,8 @@ pub(crate) struct TextWrapper {
     pub(crate) lines: SumTree<LineItem>,
 
     inline_metrics: Rc<[(Range<usize>, Pixels)]>,
-    /// Exact native widths avoid reshaping the same prefix when a drag crosses wrap thresholds.
-    width_measurements: Rc<std::cell::RefCell<WidthMeasurements>>,
+    /// Shaped widths kept across lines and edits; cleared with the font or tab stops.
+    grapheme_widths: GraphemeWidths,
     /// Sorted by line, one per line. Filler above line 0 has no line item to
     /// hang below, so every wrap row is offset by it instead.
     fillers: Vec<Filler>,
@@ -392,7 +446,7 @@ impl TextWrapper {
             tab_size: TabSize::default().tab_size,
             lines: SumTree::new(&()),
             inline_metrics: Rc::from([]),
-            width_measurements: Rc::default(),
+            grapheme_widths: GraphemeWidths::default(),
             fillers: Vec::new(),
             rewraps: 0,
             _initialized: false,
@@ -506,6 +560,7 @@ impl TextWrapper {
         }
 
         self.tab_size = tab_size;
+        self.grapheme_widths = GraphemeWidths::default();
         self.update_all(&self.text.clone(), cx);
         true
     }
@@ -517,6 +572,7 @@ impl TextWrapper {
 
         self.font = font;
         self.font_size = font_size;
+        self.grapheme_widths = GraphemeWidths::default();
         self.update_all(&self.text.clone(), cx);
     }
 
@@ -548,7 +604,8 @@ impl TextWrapper {
         self.update_wrapped(changed_text, range, new_text, false, cx);
     }
 
-    /// Only width changes reuse rows and measurements; edits, fonts, tab stops and inline metrics remeasure.
+    /// Only width changes reuse rows; edits, fonts, tab stops and inline metrics remeasure.
+    /// Grapheme widths are kept across lines and edits, and start over with the font or tab stops.
     fn update_wrapped(
         &mut self,
         changed_text: &Rope,
@@ -561,15 +618,12 @@ impl TextWrapper {
             .text_system()
             .line_wrapper(self.font.clone(), self.font_size);
         let metrics = self.inline_metrics.clone();
-        let measurements = self.width_measurements.clone();
-        if !reuse_widths {
-            measurements.borrow_mut().clear();
-        }
         let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
         let font = self.font.clone();
         let font_size = self.font_size;
         let wrapping_indent = self.wrapping_indent;
         let tab_stop = tab_stop_width(&text_system, &font, font_size, self.tab_size);
+        let mut widths = std::mem::take(&mut self.grapheme_widths);
         self.update_lines(
             changed_text,
             range,
@@ -599,8 +653,8 @@ impl TextWrapper {
                     offset = range.end;
                 }
                 if fragments.is_empty() {
-                    return measured_wrap(line_str, wrap_width, wrapping_indent, |text| {
-                        measurements.borrow_mut().measure(text, || {
+                    return measured_wrap(line_str, wrap_width, wrapping_indent, |grapheme| {
+                        widths.width(grapheme, |text| {
                             let layout = text_system.layout_line(
                                 text,
                                 font_size,
@@ -629,6 +683,7 @@ impl TextWrapper {
                 )
             },
         );
+        self.grapheme_widths = widths;
     }
 
     pub(crate) fn adjust_inline_metrics(&mut self, range: &Range<usize>, new_len: usize) {
