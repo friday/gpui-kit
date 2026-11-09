@@ -19,7 +19,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use crate::input::{
     Point as TreeSitterPoint, RopeExt, TabSize,
     layout::{LastLayout, WhitespaceIndicators},
-    tab_stops::{expanded_width, tab_stop_width},
+    tab_stops::{expanded_width, tab_advance, tab_stop_width},
 };
 
 /// Controls how soft-wrapped continuation lines are indented.
@@ -58,32 +58,41 @@ fn code_break_opportunities(text: &str) -> Vec<usize> {
 
 /// Character-first wrapping oracle for the differential tests: each candidate row is
 /// shaped on its own, with the same fit slack and hanging spaces as [`measured_wrap`].
+///
+/// `origin` is how far `text` starts from the start of its buffer line, which
+/// is where a tab measures its stops from.
 #[cfg(test)]
 fn measured_wrap_boundaries(
     text: &str,
+    origin: Pixels,
     width: Pixels,
     wrapping_indent: WrappingIndent,
+    tab_stop: Pixels,
     mut measure: impl FnMut(&str) -> Pixels,
 ) -> Vec<gpui::Boundary> {
+    let (ends, x) = grapheme_positions(text, origin, tab_stop, &mut measure);
+    if x[x.len() - 1] - x[0] <= width + FIT_SLACK {
+        return Vec::new();
+    }
     let indent = if wrapping_indent == WrappingIndent::Same {
         text.chars()
-            .take_while(|&c| c == ' ')
+            .take_while(|&c| matches!(c, ' ' | '\t'))
             .count()
             .min(gpui::LineWrapper::MAX_INDENT as usize)
     } else {
         0
     };
-    let indent_width = measure(&text[..indent]);
-    let ends: Vec<usize> = text
-        .grapheme_indices(true)
-        .map(|(ix, grapheme)| ix + grapheme.len())
-        .collect();
+    let indent_width = x[ends.partition_point(|&end| end <= indent)] - x[0];
     let opportunities: Vec<usize> = unicode_linebreak::linebreaks(text)
         .map(|(ix, _)| ix)
         .filter(|ix| ends.binary_search(ix).is_ok())
         .collect();
     let lead_end = text.len() - text.trim_start_matches([' ', '\t']).len();
     let code_breaks = code_break_opportunities(text);
+    // The width from one grapheme boundary to another.
+    let width_between = |from: usize, to: usize| {
+        x[ends.partition_point(|&end| end <= to)] - x[ends.partition_point(|&end| end <= from)]
+    };
     // The end of the word starting at a break opportunity, without the spaces
     // that hang after it.
     let word_end_at = |ix: usize| {
@@ -103,28 +112,11 @@ fn measured_wrap_boundaries(
         } else {
             width - indent_width
         };
-        // Find the fitting prefix locally. Exponential probing avoids shaping
-        // the entire remaining logical line for every visual row of a long paste.
-        let remaining = ends.len() - first;
-        let mut low = 0;
-        let mut high = 1;
-        while measure(&text[start..ends[first + high - 1]]) <= available + FIT_SLACK {
-            low = high;
-            if high == remaining {
-                break;
-            }
-            high = (high * 2).min(remaining);
-        }
-        while low + 1 < high {
-            let mid = (low + high) / 2;
-            if measure(&text[start..ends[first + mid - 1]]) <= available + FIT_SLACK {
-                low = mid;
-            } else {
-                high = mid;
-            }
-        }
+        // Find the fitting prefix in the measured positions.
+        let fitting =
+            x[first + 1..].partition_point(|&end| end - x[first] <= available + FIT_SLACK);
         // An indivisible grapheme wider than the viewport still consumes a row.
-        let fitting_end = ends[first + low.max(1) - 1];
+        let fitting_end = ends[first + fitting.max(1) - 1];
         // Spaces at a break hang past the edge, as in a browser. A break
         // opportunity comes after the spaces, so they would otherwise have
         // to fit, and a row that its words fill would lose its last word.
@@ -140,7 +132,7 @@ fn measured_wrap_boundaries(
                 .filter(|&ix| ix > past)
         };
         let end = match last_within(&opportunities, hang_end) {
-            Some(ix) if measure(&text[ix..word_end_at(ix)]) <= continued_width + FIT_SLACK => ix,
+            Some(ix) if width_between(ix, word_end_at(ix)) <= continued_width + FIT_SLACK => ix,
             space => last_within(&code_breaks, fitting_end)
                 .filter(|&ix| space.is_none_or(|space| ix > space))
                 // Spaces that hang past the edge can put the space's break
@@ -157,8 +149,37 @@ fn measured_wrap_boundaries(
     result
 }
 
+/// Where each grapheme of `text` ends, and `x[i]`, how far grapheme `i`
+/// starts from the start of the buffer line, with `text` starting at `origin`.
+/// `x` ends with where the text ends. A tab reaches the next tab stop;
+/// every other grapheme is measured with `grapheme_width`.
+fn grapheme_positions(
+    text: &str,
+    origin: Pixels,
+    tab_stop: Pixels,
+    grapheme_width: &mut impl FnMut(&str) -> Pixels,
+) -> (Vec<usize>, Vec<Pixels>) {
+    let mut ends = Vec::with_capacity(text.len());
+    let mut x = Vec::with_capacity(text.len() + 1);
+    x.push(origin);
+    for (ix, grapheme) in text.grapheme_indices(true) {
+        ends.push(ix + grapheme.len());
+        let start = x[x.len() - 1];
+        let width = if grapheme == "\t" {
+            tab_advance(start, tab_stop)
+        } else {
+            grapheme_width(grapheme)
+        };
+        x.push(start + width);
+    }
+    (ends, x)
+}
+
 /// Choose Unicode line-break opportunities, measuring a row as the sum of the
 /// shaped widths of its graphemes.
+///
+/// `origin` is how far `text` starts from the start of its buffer line, which
+/// is where a tab measures its stops from.
 ///
 /// A word that a row of its own could not hold either breaks on the row it
 /// starts on, after punctuation where it has some, so it is not moved down
@@ -172,24 +193,23 @@ fn measured_wrap_boundaries(
 /// keep reusing rows whose decisions hold.
 fn measured_wrap(
     text: &str,
+    origin: Pixels,
     width: Pixels,
     wrapping_indent: WrappingIndent,
+    tab_stop: Pixels,
     mut grapheme_width: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
     #[cfg(test)]
     wrap_width::MEASURED_LINES.with(|count| count.set(count.get() + 1));
-    // `x[i]` is the summed width of the graphemes before grapheme `i`.
-    let mut x = Vec::with_capacity(text.len() + 1);
-    x.push(px(0.));
-    let mut ends = Vec::with_capacity(text.len());
-    for (ix, grapheme) in text.grapheme_indices(true) {
-        ends.push(ix + grapheme.len());
-        x.push(x[x.len() - 1] + grapheme_width(grapheme));
-    }
-    if x[x.len() - 1] <= width + FIT_SLACK {
+    // `x[i]` is how far grapheme `i` starts from the start of the buffer
+    // line, with `text` starting at `origin`. `x` ends with where the text
+    // ends. A tab reaches its buffer-line stop; every other grapheme keeps
+    // its measured width.
+    let (ends, x) = grapheme_positions(text, origin, tab_stop, &mut grapheme_width);
+    if x[x.len() - 1] - x[0] <= width + FIT_SLACK {
         // A fitting line is summed and left alone, with no line breaking asked for.
         let mut valid_widths = WidthRange::all();
-        valid_widths.fits(x[x.len() - 1], width, px(0.));
+        valid_widths.fits(x[x.len() - 1] - x[0], width, px(0.));
         return MeasuredWrap {
             boundaries: Vec::new(),
             valid_widths,
@@ -198,13 +218,13 @@ fn measured_wrap(
     let mut valid_widths = WidthRange::all();
     let indent = if wrapping_indent == WrappingIndent::Same {
         text.chars()
-            .take_while(|&c| c == ' ')
+            .take_while(|&c| matches!(c, ' ' | '\t'))
             .count()
             .min(gpui::LineWrapper::MAX_INDENT as usize)
     } else {
         0
     };
-    let indent_width = x[indent];
+    let indent_width = x[ends.partition_point(|&end| end <= indent)] - x[0];
     let opportunities: Vec<usize> = unicode_linebreak::linebreaks(text)
         .map(|(ix, _)| ix)
         .filter(|ix| ends.binary_search(ix).is_ok())
@@ -800,7 +820,7 @@ impl TextWrapper {
                     offset = range.end;
                 }
                 if fragments.is_empty() {
-                    return measured_wrap(line_str, wrap_width, wrapping_indent, |grapheme| {
+                    let mut grapheme_width = |grapheme: &str| {
                         widths.width(grapheme, |text| {
                             let layout = text_system.layout_line(
                                 text,
@@ -815,9 +835,32 @@ impl TextWrapper {
                                 }],
                                 None,
                             );
-                            expanded_width(&layout, text, tab_stop)
+                            expanded_width(&layout, text, px(0.), tab_stop)
                         })
-                    });
+                    };
+                    // The rest of a line wrapped on its own still has its tab
+                    // stops where the start of the line puts them.
+                    let column = changed_text.offset_to_point(line_start).column;
+                    let origin = if column == 0 {
+                        px(0.)
+                    } else {
+                        let before = changed_text.slice(line_start - column..line_start);
+                        let (_, x) = grapheme_positions(
+                            &Cow::<str>::from(before),
+                            px(0.),
+                            tab_stop,
+                            &mut grapheme_width,
+                        );
+                        x[x.len() - 1]
+                    };
+                    return measured_wrap(
+                        line_str,
+                        origin,
+                        wrap_width,
+                        wrapping_indent,
+                        tab_stop,
+                        grapheme_width,
+                    );
                 }
                 if offset < line_str.len() {
                     fragments.push(LineFragment::text(&line_str[offset..]));
@@ -1750,7 +1793,14 @@ mod tests {
                 &(start..previous.len()),
                 &inserted,
                 &mut |line, width, _| {
-                    measured_wrap_boundaries(line, width, WrappingIndent::None, measure)
+                    measured_wrap_boundaries(
+                        line,
+                        px(0.),
+                        width,
+                        WrappingIndent::None,
+                        px(4.),
+                        measure,
+                    )
                 },
             );
             let expected = if value.ends_with('s') {
@@ -1768,7 +1818,7 @@ mod tests {
     #[test]
     fn measured_wrap_preserves_words_graphemes_and_indentation() {
         let wrap = |text: &str, width, indent| {
-            measured_wrap_boundaries(text, px(width), indent, |s| {
+            measured_wrap_boundaries(text, px(0.), px(width), indent, px(4.), |s| {
                 px(s.graphemes(true).count() as f32)
             })
             .into_iter()
@@ -1791,11 +1841,18 @@ mod tests {
         // Tenths are not exact in binary, so ten of them sum a hair past
         // one: a row they fill must still count as fitting.
         let wrap = |text: &str, width| {
-            measured_wrap(text, px(width), WrappingIndent::None, |_| px(0.1))
-                .boundaries
-                .into_iter()
-                .map(|b| b.ix)
-                .collect::<Vec<_>>()
+            measured_wrap(
+                text,
+                px(0.),
+                px(width),
+                WrappingIndent::None,
+                px(4.),
+                |_| px(0.1),
+            )
+            .boundaries
+            .into_iter()
+            .map(|b| b.ix)
+            .collect::<Vec<_>>()
         };
         assert!(wrap("0123456789", 1.).is_empty());
         // The space after a row that fills the width hangs past the edge.
@@ -1809,14 +1866,21 @@ mod tests {
     #[test]
     fn measured_wrap_breaks_a_long_run_of_code_where_it_starts() {
         let wrap = |text: &str, width| {
-            measured_wrap(text, px(width), WrappingIndent::None, |_| px(1.))
-                .boundaries
-                .into_iter()
-                .map(|b| b.ix)
-                .collect::<Vec<_>>()
+            measured_wrap(
+                text,
+                px(0.),
+                px(width),
+                WrappingIndent::None,
+                px(4.),
+                |_| px(1.),
+            )
+            .boundaries
+            .into_iter()
+            .map(|b| b.ix)
+            .collect::<Vec<_>>()
         };
         let wrap_oracle = |text: &str, width| {
-            measured_wrap_boundaries(text, px(width), WrappingIndent::None, |s| {
+            measured_wrap_boundaries(text, px(0.), px(width), WrappingIndent::None, px(4.), |s| {
                 px(s.graphemes(true).count() as f32)
             })
             .into_iter()
@@ -1847,6 +1911,23 @@ mod tests {
         assert_eq!(wrap_oracle("a_b&&cc", 4.), vec![2, 5]);
         assert_eq!(wrap("aaa(b)).c", 6.), vec![4]);
         assert_eq!(wrap_oracle("aaa(b)).c", 6.), vec![4]);
+    }
+
+    #[test]
+    fn measured_wrap_reaches_each_tab_to_its_stop() {
+        let wrap = |text: &str, origin: f32, width, indent| {
+            measured_wrap_boundaries(text, px(origin), px(width), indent, px(4.), |_| px(1.))
+                .into_iter()
+                .map(|b| (b.ix, b.next_indent))
+                .collect::<Vec<_>>()
+        };
+        // Each tab ends on a stop, so the line is ten wide, not eight.
+        assert_eq!(wrap("ab\tcd\tef", 0., 8., WrappingIndent::None), [(6, 0)]);
+        // A text that starts past the line start has its stops where the line puts them.
+        assert!(wrap("\tx", 2., 3., WrappingIndent::None).is_empty());
+        assert_eq!(wrap("\tx", 0., 3., WrappingIndent::None), [(1, 0)]);
+        // A leading tab is indentation four wide, which every later row keeps.
+        assert_eq!(wrap("\tabcdefgh", 0., 8., WrappingIndent::Same), [(5, 1)]);
     }
 
     #[test]

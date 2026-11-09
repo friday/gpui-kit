@@ -2097,6 +2097,7 @@ impl<M: InputModeKind> TextElement<M> {
             width,
             line_height,
             state.is_single_line() || !state.soft_wrap,
+            state.mode.tab_size().tab_size,
         );
         if !state.tokens_visible() {
             if state.token_layout_cache.is_none() {
@@ -2207,6 +2208,23 @@ impl<M: InputModeKind> TextElement<M> {
                     rows.push(state.display_map.longest_row());
                     rows.sort_unstable();
                     rows.dedup();
+                    let font_size = style.font_size.to_pixels(window.rem_size());
+                    let tab_stop = tab_stop_width(
+                        window.text_system(),
+                        &style.font(),
+                        font_size,
+                        state.mode.tab_size().tab_size,
+                    );
+                    let text_width = |part: &str, origin: Pixels| {
+                        let mut shaped = window.text_system().shape_line(
+                            part.to_owned().into(),
+                            font_size,
+                            &[style.to_run(part.len())],
+                            None,
+                        );
+                        expand_tabs(&mut shaped, origin, tab_stop);
+                        shaped.width
+                    };
                     cache.unwrapped_width = rows
                         .into_iter()
                         .map(|row| {
@@ -2220,31 +2238,12 @@ impl<M: InputModeKind> TextElement<M> {
                                 .take_while(|s| s.range().start < start + text.len())
                             {
                                 let local = span.range().start - start..span.range().end - start;
-                                let part = &text[offset..local.start];
-                                width += window
-                                    .text_system()
-                                    .shape_line(
-                                        part.to_owned().into(),
-                                        style.font_size.to_pixels(window.rem_size()),
-                                        &[style.to_run(part.len())],
-                                        None,
-                                    )
-                                    .width;
+                                width += text_width(&text[offset..local.start], width);
                                 width +=
                                     cache.widths.get(span.token()).copied().unwrap_or_default();
                                 offset = local.end;
                             }
-                            let part = &text[offset..];
-                            width
-                                + window
-                                    .text_system()
-                                    .shape_line(
-                                        part.to_owned().into(),
-                                        style.font_size.to_pixels(window.rem_size()),
-                                        &[style.to_run(part.len())],
-                                        None,
-                                    )
-                                    .width
+                            width + text_width(&text[offset..], width)
                         })
                         .max()
                         .unwrap_or_default();
@@ -2277,6 +2276,12 @@ impl<M: InputModeKind> TextElement<M> {
             .token_layout_cache
             .as_ref()
             .expect("tokens measured before shaping");
+        let tab_stop = tab_stop_width(
+            window.text_system(),
+            &window.text_style().font(),
+            font_size,
+            state.mode.tab_size().tab_size,
+        );
         let mut run_offset = 0;
         last_layout
             .visible_buffer_lines
@@ -2295,6 +2300,7 @@ impl<M: InputModeKind> TextElement<M> {
                         .clone()
                 };
                 let mut lines: SmallVec<[InputLine; 1]> = SmallVec::new();
+                let mut row_origin = px(0.);
                 for range in ranges {
                     let mut fragments = Vec::new();
                     let mut offset = range.start;
@@ -2308,12 +2314,13 @@ impl<M: InputModeKind> TextElement<M> {
                         let local = span.range().start - line_start..span.range().end - line_start;
                         if offset < local.start {
                             let part = offset..local.start;
-                            let shaped = window.text_system().shape_line(
+                            let mut shaped = window.text_system().shape_line(
                                 text[part.clone()].to_owned().into(),
                                 font_size,
                                 &runs_for_range(runs, run_offset, &part),
                                 None,
                             );
+                            expand_tabs(&mut shaped, row_origin + x, tab_stop);
                             let width = shaped.width;
                             fragments.push(InlineFragment {
                                 range: part.start - range.start..part.end - range.start,
@@ -2335,12 +2342,13 @@ impl<M: InputModeKind> TextElement<M> {
                     }
                     if offset < range.end {
                         let part = offset..range.end;
-                        let shaped = window.text_system().shape_line(
+                        let mut shaped = window.text_system().shape_line(
                             text[part.clone()].to_owned().into(),
                             font_size,
                             &runs_for_range(runs, run_offset, &part),
                             None,
                         );
+                        expand_tabs(&mut shaped, row_origin + x, tab_stop);
                         let width = shaped.width;
                         fragments.push(InlineFragment {
                             range: part.start - range.start..part.end - range.start,
@@ -2349,7 +2357,9 @@ impl<M: InputModeKind> TextElement<M> {
                             text: Some(shaped),
                         });
                     }
-                    lines.push(InputLine::inline(text[range].to_owned().into(), fragments));
+                    let line = InputLine::inline(text[range].to_owned().into(), fragments);
+                    row_origin += line.width;
+                    lines.push(line);
                 }
                 let indent = state.display_map.line(row).map_or(0, |line| line.indent);
                 let wrap_indent = if indent > 0 && lines.len() > 1 {
@@ -2535,7 +2545,7 @@ impl<M: InputModeKind> TextElement<M> {
             let mut shaped_line = window
                 .text_system()
                 .shape_line(text, font_size, line_runs, None);
-            expand_tabs(&mut shaped_line, tab_stop);
+            expand_tabs(&mut shaped_line, px(0.), tab_stop);
 
             let line_layout = LineLayout::new()
                 .lines(smallvec::smallvec![shaped_line])
@@ -2586,6 +2596,9 @@ impl<M: InputModeKind> TextElement<M> {
 
             let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
             let mut line_has_background = false;
+            // A row starts its tabs where its line puts them, so a wrapped
+            // row keeps the stops of its buffer line.
+            let mut row_origin = px(0.);
 
             for range in &line_item.wrapped_lines {
                 let line_runs = runs_for_range(runs, run_offset, &range);
@@ -2605,9 +2618,10 @@ impl<M: InputModeKind> TextElement<M> {
                 let mut shaped_line = window
                     .text_system()
                     .shape_line(sub_line, font_size, &line_runs, None);
-                expand_tabs(&mut shaped_line, tab_stop);
+                expand_tabs(&mut shaped_line, row_origin, tab_stop);
 
                 line_has_background |= has_background(&line_runs);
+                row_origin += shaped_line.width;
                 wrapped_lines.push(shaped_line);
             }
 
@@ -3345,7 +3359,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         }],
                         wrap_width,
                     );
-                    expanded_width(&shaped, &longest_line, tab_stop).max(widest_laid_out_line)
+                    expanded_width(&shaped, &longest_line, px(0.), tab_stop)
+                        .max(widest_laid_out_line)
                 }
             };
             state
@@ -4265,7 +4280,8 @@ mod tests {
     use super::*;
     use crate::input::{
         EditorMode, EditorState, FoldRange, GutterDecoration, GutterDecorationCollection,
-        OverviewRulerDecoration, OverviewRulerDecorationCollection, RangeDecoration, Redo, Undo,
+        OverviewRulerDecoration, OverviewRulerDecorationCollection, RangeDecoration, Redo, TabSize,
+        Undo,
     };
     use gpui::{
         AppContext as _, Context, EntityInputHandler as _, ListAlignment, ListOffset, ListState,
@@ -5132,6 +5148,116 @@ mod tests {
             assert_eq!(last.len(), 1);
             assert!(last[0].top_left.y > rest.last().unwrap().top_left.y);
         });
+    }
+
+    fn tab_editor(
+        cx: &mut TestAppContext,
+        text: &str,
+        wrap: bool,
+    ) -> (Entity<EditorState>, VisualTestContext) {
+        cx.update(crate::init);
+        let mut editor = None;
+        let window = cx.open_window(size(px(240.), px(140.)), |window, cx| {
+            let state = cx.new(|cx| {
+                EditorState::new(window, cx)
+                    .soft_wrap(wrap)
+                    .tab_size(TabSize {
+                        tab_size: 4,
+                        hard_tabs: true,
+                    })
+                    .default_value(text)
+            });
+            editor = Some(state.clone());
+            DecorationHarness(state)
+        });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (editor.unwrap(), cx)
+    }
+
+    fn assert_near(actual: Pixels, expected: Pixels) {
+        assert!(
+            (actual - expected).abs() < px(0.01),
+            "{actual:?} is not {expected:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn a_tab_reaches_the_next_tab_stop_for_the_caret_and_a_click(cx: &mut TestAppContext) {
+        let (editor, mut cx) = tab_editor(cx, "\txy\nab\txy", false);
+        let caret = |cx: &mut VisualTestContext, offset: usize| {
+            editor.read_with(cx, |state, _| {
+                state.range_to_bounds(&(offset..offset)).unwrap().origin
+            })
+        };
+        let (line_start, space, line_height) = editor.read_with(&cx, |state, _| {
+            let layout = state.last_layout.as_ref().unwrap();
+            (
+                state.range_to_bounds(&(0..0)).unwrap().origin,
+                layout.space_width,
+                layout.line_height,
+            )
+        });
+        let stop = line_start.x + space * 4.;
+        // After "\t" and after "ab\t", the caret is on the first stop.
+        assert_near(caret(&mut cx, 1).x, stop);
+        assert_near(caret(&mut cx, 7).x, stop);
+
+        // A click just past the stop lands right after the tab.
+        for (row, offset) in [(0., 1), (1., 7)] {
+            let position = point(stop + space * 0.2, line_start.y + line_height * (row + 0.5));
+            cx.simulate_mouse_down(
+                position,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                position,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            editor.read_with(&cx, |state, _| assert_eq!(state.cursor(), offset));
+        }
+    }
+
+    #[gpui::test]
+    fn a_wrapped_line_with_tabs_breaks_where_its_drawn_text_reaches_the_edge(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, mut cx) = tab_editor(cx, &"a\t".repeat(40), true);
+        let rows = |cx: &mut VisualTestContext| {
+            editor.read_with(cx, |state, _| {
+                let layout = state.last_layout.as_ref().unwrap();
+                let wrap_width = layout.wrap_width.unwrap();
+                let rows = &layout.lines[0].wrapped_lines;
+                assert!(rows.len() > 1);
+                for row in &rows[..rows.len() - 1] {
+                    // The row's last letter is drawn inside the edge. The tab
+                    // after it may hang past the edge, as a space does.
+                    let last_letter = row.text.rfind('a').unwrap();
+                    assert!(row.x_for_index(last_letter + 1) <= wrap_width + px(0.01));
+                    // The next row's first letter would not have fit.
+                    assert!(row.width + layout.space_width > wrap_width);
+                }
+                rows.len()
+            })
+        };
+        let rows_at_four = rows(&mut cx);
+
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_tab_size(
+                    TabSize {
+                        tab_size: 8,
+                        hard_tabs: true,
+                    },
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(rows(&mut cx) > rows_at_four);
     }
 
     #[gpui::test]
