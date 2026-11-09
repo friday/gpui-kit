@@ -11,6 +11,16 @@ thread_local! {
     pub(super) static MEASURED_LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// How far past the wrap width a row may read when deciding what fits.
+///
+/// Both sides carry float dust: the row width is a running f32 sum of the
+/// grapheme widths, and the wrap width arrives by subtraction. Each addition
+/// rounds by at most half an ulp of the running sum (unit roundoff 2^-24), so
+/// at a ~200px viewport the error only approaches this slack on a line of
+/// roughly a thousand graphemes, well past any real code line. Genuine
+/// overflow overshoots by whole pixels, so the slack cannot flip a real break.
+pub(super) const FIT_SLACK: Pixels = px(0.01);
+
 /// All comparisons that chose the current line breaks must retain their truth value.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WidthRange {
@@ -37,11 +47,13 @@ impl WidthRange {
         }
     }
 
-    /// Report the original fit predicate and retain a safe interval for the enclosing viewport.
+    /// Report the fit predicate and retain a safe interval for the enclosing viewport.
     /// `indent` is subtracted from its width to obtain `available` on continuation rows.
+    /// A row may read [`FIT_SLACK`] past the wrap width before it counts as overflow,
+    /// and the retained interval shifts by the same slack.
     pub(super) fn fits(&mut self, measured: Pixels, available: Pixels, indent: Pixels) -> bool {
-        let fits = measured <= available;
-        let boundary = f32::from(measured + indent);
+        let fits = measured <= available + FIT_SLACK;
+        let boundary = f32::from(measured + indent - FIT_SLACK);
         if fits {
             self.minimum = self.minimum.max(px(boundary.next_up()));
         } else {
