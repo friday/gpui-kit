@@ -7,7 +7,7 @@
 use crate::root::WindowState;
 use gpui::{
     App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
-    Point, Render, Subscription, Window, anchored, deferred, div, px,
+    Point, Render, Subscription, Window, anchored, div, px,
 };
 
 use crate::menu::{PopupMenu, PopupMenuItem};
@@ -119,17 +119,16 @@ impl Render for FallbackMenuOverlay {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let mut root = div();
         if let Some(active) = self.active.as_ref() {
-            root = root.child(
-                deferred(
-                    anchored()
-                        .position(active.position)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(active.menu.clone()),
-                )
-                .with_priority(gpui_base::POPUP_PRIORITY),
-            );
+            root = root.child(gpui_base::deferred_popup(
+                anchored()
+                    .position(active.position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(active.menu.clone()),
+            ));
         }
-        root
+        // Mounted by the root outside every dialog, for a menu opened from
+        // whichever one has the user.
+        gpui_base::in_top_layer(root)
     }
 }
 

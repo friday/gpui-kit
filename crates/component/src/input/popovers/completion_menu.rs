@@ -3,7 +3,7 @@ use std::{ops::Range, rc::Rc};
 use gpui::{
     Action, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity, EventEmitter,
     HighlightStyle, InteractiveElement as _, IntoElement, ParentElement, Pixels, Render,
-    RenderOnce, SharedString, Styled, StyledText, Subscription, WeakEntity, Window, deferred, div,
+    RenderOnce, SharedString, Styled, StyledText, Subscription, WeakEntity, Window, div,
     prelude::FluentBuilder, px, rems,
 };
 use gpui_base::TestSupportExt as _;
@@ -430,7 +430,7 @@ impl Render for CompletionMenu {
         let list = self.list.clone();
         let menu = cx.weak_entity();
 
-        deferred(CaretAnchoredPopup::new(
+        gpui_base::deferred_popup(CaretAnchoredPopup::new(
             self.editor.clone(),
             move |anchor, window, cx| {
                 // `anchor` is in window coordinates, from the current frame.
@@ -493,7 +493,6 @@ impl Render for CompletionMenu {
                     .into_any_element()
             },
         ))
-        .with_priority(gpui_base::POPUP_PRIORITY)
         .into_any_element()
     }
 }

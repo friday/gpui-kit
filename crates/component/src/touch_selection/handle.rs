@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::{
     App, Bounds, Hitbox, HitboxBehavior, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, RenderOnce, Styled as _, TouchDragEvent, TouchPhase, Window,
-    canvas, deferred,
+    canvas,
 };
 use gpui_base::{SelectionEdge, TouchHandle, TouchSelectionSnapshot};
 
@@ -198,7 +198,7 @@ impl RenderOnce for SelectionHandles {
         let source = self.source;
         let on_drag = self.on_drag;
         let on_paint = self.on_paint;
-        deferred(
+        gpui_base::deferred_popup(
             canvas(
                 {
                     let source = source.clone();
@@ -217,6 +217,5 @@ impl RenderOnce for SelectionHandles {
             .absolute()
             .size_0(),
         )
-        .with_priority(gpui_base::POPUP_PRIORITY)
     }
 }

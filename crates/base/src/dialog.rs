@@ -7,8 +7,8 @@ use std::{
 use gpui::{
     AnyElement, App, ClickEvent, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, ParentElement, Pixels, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, anchored, deferred, div,
-    point, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, anchored, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use smallvec::SmallVec;
 
@@ -552,7 +552,8 @@ impl RenderOnce for Dialog {
         let backdrop_change = self.on_open_change.clone();
         let viewport = window.viewport_size();
 
-        deferred(
+        crate::stacking::deferred_dialog(
+            self.layer,
             anchored().position(point(px(0.), px(0.))).child(
                 div()
                     .id(("dialog-host", self.layer))
@@ -650,7 +651,6 @@ impl RenderOnce for Dialog {
                     .refine_style(&self.style),
             ),
         )
-        .with_priority(10 + self.layer)
         .into_any_element()
     }
 }
