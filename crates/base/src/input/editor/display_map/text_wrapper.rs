@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use wrap_width::{MeasuredWrap, WidthRange};
+use wrap_width::{FIT_SLACK, MeasuredWrap, WidthRange};
 
 use gpui::{
     App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window, point, px, size,
@@ -32,7 +32,8 @@ pub enum WrappingIndent {
     Same,
 }
 
-/// Unmodified upstream character-first algorithm is the independent differential-test oracle.
+/// Character-first wrapping oracle for the differential tests: each candidate row is
+/// shaped on its own, with the same fit slack and hanging spaces as [`measured_wrap`].
 #[cfg(test)]
 fn measured_wrap_boundaries(
     text: &str,
@@ -71,7 +72,7 @@ fn measured_wrap_boundaries(
         let remaining = ends.len() - first;
         let mut low = 0;
         let mut high = 1;
-        while measure(&text[start..ends[first + high - 1]]) <= available {
+        while measure(&text[start..ends[first + high - 1]]) <= available + FIT_SLACK {
             low = high;
             if high == remaining {
                 break;
@@ -80,7 +81,7 @@ fn measured_wrap_boundaries(
         }
         while low + 1 < high {
             let mid = (low + high) / 2;
-            if measure(&text[start..ends[first + mid - 1]]) <= available {
+            if measure(&text[start..ends[first + mid - 1]]) <= available + FIT_SLACK {
                 low = mid;
             } else {
                 high = mid;
@@ -88,10 +89,14 @@ fn measured_wrap_boundaries(
         }
         // An indivisible grapheme wider than the viewport still consumes a row.
         let fitting_end = ends[first + low.max(1) - 1];
-        if fitting_end == text.len() {
+        // Spaces at a break hang past the edge, as in a browser. A break
+        // opportunity comes after the spaces, so they would otherwise have
+        // to fit, and a row that its words fill would lose its last word.
+        let hang_end = text.len() - text[fitting_end..].trim_start_matches([' ', '\t']).len();
+        if hang_end == text.len() {
             break;
         }
-        let candidate = opportunities.partition_point(|&ix| ix <= fitting_end);
+        let candidate = opportunities.partition_point(|&ix| ix <= hang_end);
         let end = candidate
             .checked_sub(1)
             .map(|ix| opportunities[ix])
@@ -131,7 +136,7 @@ fn measured_wrap(
         ends.push(ix + grapheme.len());
         x.push(x[x.len() - 1] + grapheme_width(grapheme));
     }
-    if x[x.len() - 1] <= width {
+    if x[x.len() - 1] <= width + FIT_SLACK {
         // A fitting line is summed and left alone, with no line breaking asked for.
         let mut valid_widths = WidthRange::all();
         valid_widths.fits(x[x.len() - 1], width, px(0.));
@@ -172,17 +177,34 @@ fn measured_wrap(
             .get(MAX_WORD_PROBE_GRAPHEMES - 1)
             .copied()
             .unwrap_or(text.len());
-        let mut fitting = |candidates: &[usize], limit: Option<usize>| {
+        let mut fitting = |candidates: &[usize], limit: Option<usize>, hanging_spaces: bool| {
             let mut fits = |end| {
                 if limit.is_some_and(|limit| end > limit) {
                     return None;
                 }
                 // The row is summed from the cached grapheme widths instead of shaped.
-                let to = ends
-                    .binary_search(&end)
-                    .expect("wrap candidates end on grapheme boundaries");
+                let measured = if hanging_spaces {
+                    // Trailing spaces and tabs hang past the edge. A break
+                    // opportunity comes after the spaces, so measure the row
+                    // without them: otherwise a row that its words fill would
+                    // lose its last word.
+                    let trimmed_end = start + text[start..end].trim_end_matches([' ', '\t']).len();
+                    if trimmed_end == start {
+                        px(0.)
+                    } else {
+                        let trimmed = ends
+                            .binary_search(&trimmed_end)
+                            .expect("wrap candidates end on grapheme boundaries");
+                        x[trimmed + 1] - x[first]
+                    }
+                } else {
+                    let to = ends
+                        .binary_search(&end)
+                        .expect("wrap candidates end on grapheme boundaries");
+                    x[to + 1] - x[first]
+                };
                 Some(valid_widths.fits(
-                    x[to + 1] - x[first],
+                    measured,
                     available,
                     if start == 0 { px(0.) } else { indent_width },
                 ))
@@ -209,19 +231,21 @@ fn measured_wrap(
         let first_word =
             opportunities.partition_point(|&ix| ix <= start || (start == 0 && ix <= indent));
         let words = &opportunities[first_word..];
-        let end = if let Some(word_count) = fitting(words, Some(word_probe_end))
+        let end = if let Some(word_count) = fitting(words, Some(word_probe_end), true)
             && word_count > 0
         {
             words[word_count - 1]
         } else {
             // An oversized word retains the original complete-grapheme fallback. At least one
             // grapheme is consumed even when it is wider than the available viewport.
-            let count = fitting(&ends[first..], None).unwrap();
+            let count = fitting(&ends[first..], None, false).unwrap();
             let fitting_end = ends[first + count.max(1) - 1];
             if fitting_end == text.len() {
                 break;
             }
-            let word_count = words.partition_point(|&ix| ix <= fitting_end);
+            // Spaces at a break hang past the edge, as they do for the word probe.
+            let hang_end = text.len() - text[fitting_end..].trim_start_matches([' ', '\t']).len();
+            let word_count = words.partition_point(|&ix| ix <= hang_end);
             word_count
                 .checked_sub(1)
                 .map(|ix| words[ix])
@@ -1660,6 +1684,26 @@ mod tests {
         assert_eq!(wrap("abc", 0., WrappingIndent::None), vec![1, 2]);
         // Closing punctuation stays with the preceding Chinese character.
         assert_eq!(wrap("你好，世界", 2., WrappingIndent::None), vec![3, 9]);
+    }
+
+    #[test]
+    fn measured_wrap_keeps_a_row_that_fills_the_width() {
+        // Tenths are not exact in binary, so ten of them sum a hair past
+        // one: a row they fill must still count as fitting.
+        let wrap = |text: &str, width| {
+            measured_wrap(text, px(width), WrappingIndent::None, |_| px(0.1))
+                .boundaries
+                .into_iter()
+                .map(|b| b.ix)
+                .collect::<Vec<_>>()
+        };
+        assert!(wrap("0123456789", 1.).is_empty());
+        // The space after a row that fills the width hangs past the edge.
+        assert_eq!(wrap("0123456789 next", 1.), vec![11]);
+        assert_eq!(wrap("0123 5678 next", 1.), vec![10]);
+        assert!(wrap("0123456789   ", 1.).is_empty());
+        // Eleven tenths genuinely overflow the width.
+        assert_eq!(wrap("01234567890", 1.), vec![10]);
     }
 
     #[test]
