@@ -2,8 +2,8 @@ use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, Length,
     MouseDownEvent, ParentElement, Pixels, Render, RenderOnce, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window, deferred, div,
-    prelude::FluentBuilder, px, rems,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
+    rems,
 };
 
 use rust_i18n::t;
@@ -693,21 +693,18 @@ where
                     cx,
                 ))
                 .when(self.state.open, |this| {
-                    this.child(
-                        deferred(render_popup_shell(
-                            ("combobox-popup", cx.entity_id()),
-                            &self.state.list,
-                            self.state.menu_width,
-                            self.state.search_placeholder.clone(),
-                            self.state.size,
-                            self.state.menu_max_h,
-                            bounds,
-                            footer_el,
-                            dismiss_handler,
-                            cx,
-                        ))
-                        .with_priority(gpui_base::POPUP_PRIORITY),
-                    )
+                    this.child(gpui_base::deferred_popup(render_popup_shell(
+                        ("combobox-popup", cx.entity_id()),
+                        &self.state.list,
+                        self.state.menu_width,
+                        self.state.search_placeholder.clone(),
+                        self.state.size,
+                        self.state.menu_max_h,
+                        bounds,
+                        footer_el,
+                        dismiss_handler,
+                        cx,
+                    )))
                 }),
         )
     }

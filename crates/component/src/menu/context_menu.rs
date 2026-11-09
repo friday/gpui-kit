@@ -8,7 +8,7 @@ use gpui::{
     FocusHandle, Focusable, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, LongPressEvent, MouseButton, MouseDownEvent,
     ParentElement, Pixels, Point, Position, Style, StyleRefinement, Styled, Subscription,
-    TouchPhase, Window, anchored, deferred, div, px,
+    TouchPhase, Window, anchored, div, px,
 };
 
 use crate::{input::AnyInputState, menu::PopupMenu, root::WindowState};
@@ -178,7 +178,7 @@ struct DeferredMenu {
 
 impl DeferredMenu {
     fn build_menu(&self, window: &mut Window) -> AnyElement {
-        deferred(
+        gpui_base::deferred_popup(
             anchored().child(
                 div()
                     .w(window.bounds().size.width)
@@ -195,8 +195,7 @@ impl DeferredMenu {
                     ),
             ),
         )
-        .with_priority(gpui_base::POPUP_PRIORITY)
-        .into_any()
+        .into_any_element()
     }
 }
 

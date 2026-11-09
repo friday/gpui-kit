@@ -2482,9 +2482,10 @@ by constructing overlays itself. A view's `init` runs before its window has a
 root, so an overlay call made there is refused with a message that says so.
 
 **Stacking**, painted back to front: the script's content; at most one sheet,
-anchored to a viewport edge; the dialog stack in open order, each deferred at
-`10 + index` so a later dialog always paints over an earlier one regardless of
-element build order; and toasts above everything at `POPUP_PRIORITY + 1`. A
+anchored to a viewport edge; the dialog stack in open order, each deferred by
+its index so a later dialog always paints over an earlier one and the popups
+open in it, regardless of element build order; and toasts above everything at
+`ABOVE_LAYERS_PRIORITY`. A
 sheet sits _below_ the dialog stack because a sheet is a place in the window: a
 dialog raised from inside a sheet must be readable, and a sheet raised under a
 dialog must not cover it. Only the topmost dialog draws a backdrop, so a stack
