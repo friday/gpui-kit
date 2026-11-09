@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    DeferredPopover, GlobalState, Popup, ResolvedPosition, Selectable, StyledExt as _,
+    DeferredPopover, GlobalState, Popup, PopupArrow, ResolvedPosition, Selectable, StyledExt as _,
     actions::{Cancel, Confirm},
 };
 
@@ -190,6 +190,7 @@ pub struct Popover {
     style: StyleRefinement,
     anchor: Anchor,
     offset: gpui::Pixels,
+    arrow: Option<PopupArrow>,
     on_position: Option<Box<dyn Fn(ResolvedPosition, gpui::Bounds<gpui::Pixels>)>>,
     default_open: bool,
     open: Option<bool>,
@@ -208,6 +209,7 @@ impl Popover {
             style: StyleRefinement::default(),
             anchor: Anchor::TopLeft,
             offset: gpui::px(0.),
+            arrow: None,
             on_position: None,
             default_open: false,
             open: None,
@@ -228,6 +230,12 @@ impl Popover {
     /// Gap from the trigger along the anchor's outward direction, zero by default.
     pub fn offset(mut self, offset: gpui::Pixels) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Draw an arrow from the surface back to the trigger.
+    pub fn arrow(mut self, arrow: PopupArrow) -> Self {
+        self.arrow = Some(arrow);
         self
     }
 
@@ -337,6 +345,7 @@ impl RenderOnce for Popover {
             .refine_style(&self.style)
             .anchor(self.anchor)
             .offset(self.offset)
+            .when_some(self.arrow, |this, arrow| this.arrow(arrow))
             .when_some(self.on_position, |this, callback| {
                 this.on_position(callback)
             })
