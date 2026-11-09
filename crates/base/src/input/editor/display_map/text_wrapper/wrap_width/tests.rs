@@ -1,10 +1,13 @@
 //! Differential wrapping and edit invalidation checks over the original display-map implementation.
 
-use super::super::{TextWrapper, WrappingIndent, measured_wrap, measured_wrap_boundaries};
+use super::super::{
+    TextWrapper, WrappingIndent, grapheme_positions, measured_wrap, measured_wrap_boundaries,
+};
 use super::*;
 use crate::input::RopeExt as _;
 use gpui::{App, TestAppContext, font};
 use ropey::Rope;
+use std::borrow::Cow;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -28,6 +31,30 @@ fn oracle_measure(text: &str) -> Pixels {
         .sum::<f32>())
 }
 
+/// Fixed tab stop for the differential tests, matching the deterministic tab
+/// width above, so rows starting with tabs measure as they did.
+const TEST_TAB_STOP: Pixels = px(28.25);
+
+/// Where `line_start` sits from the start of its buffer line, matching the
+/// wrapper: a line start is its own origin, while the rest of a wrapped line
+/// keeps the stops of its line start.
+fn origin_of(text: &Rope, line_start: usize) -> Pixels {
+    let column = text.offset_to_point(line_start).column;
+    if column == 0 {
+        px(0.)
+    } else {
+        let before = text.slice(line_start - column..line_start);
+        let mut widths = measure;
+        let (_, x) = grapheme_positions(
+            &Cow::<str>::from(before),
+            px(0.),
+            TEST_TAB_STOP,
+            &mut widths,
+        );
+        x[x.len() - 1]
+    }
+}
+
 /// Compare complete logical-to-visual row geometry, including continuation indentation.
 fn rows(wrapper: &TextWrapper) -> Vec<(usize, u32, Vec<Range<usize>>)> {
     wrapper
@@ -46,9 +73,16 @@ fn resize(wrapper: &mut TextWrapper, text: &Rope, width: Pixels, reuse: bool) ->
         &(0..text.len()),
         text,
         reuse,
-        &mut |line, width, _| {
+        &mut |line, width, line_start| {
             calls += 1;
-            measured_wrap(line, width, indent, measure)
+            measured_wrap(
+                line,
+                origin_of(text, line_start),
+                width,
+                indent,
+                TEST_TAB_STOP,
+                measure,
+            )
         },
     );
     calls
@@ -64,15 +98,27 @@ fn oversized_words_keep_measurement_work_local() {
                     let mut measured_bytes = 0;
                     let mut longest_probe = 0;
                     let mut graphemes_shaped = 0;
-                    let measured = measured_wrap(&text, px(width), indent, |grapheme| {
-                        graphemes_shaped += 1;
-                        measured_bytes += grapheme.len();
-                        longest_probe = longest_probe.max(grapheme.len());
-                        px(grapheme.len() as f32)
-                    });
-                    let original = measured_wrap_boundaries(&text, px(width), indent, |part| {
-                        px(part.len() as f32)
-                    });
+                    let measured = measured_wrap(
+                        &text,
+                        px(0.),
+                        px(width),
+                        indent,
+                        TEST_TAB_STOP,
+                        |grapheme| {
+                            graphemes_shaped += 1;
+                            measured_bytes += grapheme.len();
+                            longest_probe = longest_probe.max(grapheme.len());
+                            px(grapheme.len() as f32)
+                        },
+                    );
+                    let original = measured_wrap_boundaries(
+                        &text,
+                        px(0.),
+                        px(width),
+                        indent,
+                        TEST_TAB_STOP,
+                        |part| px(part.len() as f32),
+                    );
                     assert_eq!(measured.boundaries, original);
                     assert_eq!(
                         graphemes_shaped,
@@ -115,9 +161,21 @@ fn cached_resize_matches_cold_unicode_wrapping_at_fractional_thresholds() {
                 reused += text.lines_len().saturating_sub(wrapped);
                 let mut cold = TextWrapper::new(font("test"), px(14.), Some(px(width)));
                 cold.wrapping_indent = indent;
-                cold._update(&text, &(0..text.len()), &text, &mut |line, width, _| {
-                    measured_wrap_boundaries(line, width, indent, oracle_measure)
-                });
+                cold._update(
+                    &text,
+                    &(0..text.len()),
+                    &text,
+                    &mut |line, width, line_start| {
+                        measured_wrap_boundaries(
+                            line,
+                            origin_of(&text, line_start),
+                            width,
+                            indent,
+                            TEST_TAB_STOP,
+                            oracle_measure,
+                        )
+                    },
+                );
                 assert_eq!(
                     rows(&cached),
                     rows(&cold),
@@ -219,7 +277,7 @@ fn native_cached_resize_matches_cold_sums_and_fits_natively() {
                             cached.set_tab_size(tab_size, cx);
                             assert_cold(&cached, cx);
                             let threshold = f32::from(native_width(
-                                &system, &font, font_size, tab_size, "ab\tc\t",
+                                &system, &font, font_size, tab_size, "ab\tc\t", px(0.),
                             ));
                             let widths = (1..500).step_by(7).map(|n| n as f32).chain([
                                 threshold,
@@ -247,7 +305,15 @@ fn native_cached_resize_matches_cold_sums_and_fits_natively() {
                                                 &font,
                                                 font_size,
                                                 tab_size,
-                                                &line_text[range.clone()]
+                                                &line_text[range.clone()],
+                                                native_origin(
+                                                    &system,
+                                                    &font,
+                                                    font_size,
+                                                    tab_size,
+                                                    &line_text,
+                                                    range.start
+                                                )
                                             ) <= px(width),
                                             "font={family}, size={font_size:?}, tab_size={tab_size}, indent={indent:?}, width={width}, text={text:?}"
                                         );
@@ -262,7 +328,8 @@ fn native_cached_resize_matches_cold_sums_and_fits_natively() {
     });
 }
 
-/// Measure `text` with native `font` shaping at `font_size`, then apply `tab_size` space stops.
+/// Measure `text` with native `font` shaping at `font_size`, then apply `tab_size`
+/// space stops counted from `origin`, the way the editor draws a wrapped row.
 #[cfg(target_os = "windows")]
 fn native_width(
     system: &gpui::WindowTextSystem,
@@ -270,6 +337,7 @@ fn native_width(
     font_size: Pixels,
     tab_size: usize,
     text: &str,
+    origin: Pixels,
 ) -> Pixels {
     let layout = system.layout_line(
         text,
@@ -285,7 +353,27 @@ fn native_width(
         None,
     );
     let stop = crate::input::tab_stops::tab_stop_width(system, font, font_size, tab_size);
-    crate::input::tab_stops::expanded_width(&layout, text, stop)
+    crate::input::tab_stops::expanded_width(&layout, text, origin, stop)
+}
+
+/// Where the wrapped row starting at `row_start` sits in its buffer line.
+#[cfg(target_os = "windows")]
+fn native_origin(
+    system: &gpui::WindowTextSystem,
+    font: &gpui::Font,
+    font_size: Pixels,
+    tab_size: usize,
+    line_text: &str,
+    row_start: usize,
+) -> Pixels {
+    native_width(
+        system,
+        font,
+        font_size,
+        tab_size,
+        &line_text[..row_start],
+        px(0.),
+    )
 }
 
 /// Changing tab stops invalidates both measured widths and reusable rows at an unchanged viewport.
@@ -302,7 +390,7 @@ fn native_tab_size_changes_invalidate_warm_wrap_caches() {
         let font = font("Consolas");
         let font_size = px(14.);
         let system = gpui::WindowTextSystem::new(cx.text_system().clone());
-        let width = native_width(&system, &font, font_size, 4, "abcdef") + px(0.5);
+        let width = native_width(&system, &font, font_size, 4, "abcdef", px(0.)) + px(0.5);
         let source = Rope::from("ab\tc\tde\n\txy\tz");
         let mut cached = TextWrapper::new(font, font_size, Some(width));
         cached.set_tab_size(2, cx);

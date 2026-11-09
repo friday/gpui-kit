@@ -5,10 +5,18 @@
 //! editor's tab size. So a line is shaped as is and its tabs are then widened
 //! to the next tab stop, by moving every glyph after a tab to the right. The
 //! caret, hit testing and selection all read glyph positions, so they follow.
+//!
+//! A stop comes every tab size columns from the start of the buffer line, so
+//! a soft-wrapped row keeps the stops of its line. Drawing, soft wrap, the
+//! caret and clicks all use the same rule.
 
 use std::sync::Arc;
 
 use gpui::{Font, LineLayout, Pixels, ShapedGlyph, ShapedLine, ShapedRun, WindowTextSystem, px};
+
+/// How close to a tab stop counts as on it. Positions are sums of glyph
+/// widths, so one that should land on a stop can fall a hair short of it.
+const STOP_SLACK: Pixels = px(0.01);
 
 /// The distance between two tab stops: `tab_size` spaces of `font`.
 pub(crate) fn tab_stop_width(
@@ -21,24 +29,39 @@ pub(crate) fn tab_stop_width(
     text_system.layout_width(font_id, font_size, ' ') * tab_size as f32
 }
 
-/// Widens each tab of `line` to end on the next multiple of `stop`.
+/// How wide a tab starting at `x` is, reaching the next tab stop.
+pub(crate) fn tab_advance(x: Pixels, stop: Pixels) -> Pixels {
+    if stop <= px(0.) {
+        return px(0.);
+    }
+    let stops_passed = ((x + STOP_SLACK) / stop).floor();
+    stop * (stops_passed + 1.) - x
+}
+
+/// Widens each tab of `line` to end on the next tab stop.
 ///
-/// Stops are counted from the start of `line`, so a soft-wrapped row starts
-/// its own stops, the same way the wrapper measures it.
-pub(crate) fn expand_tabs(line: &mut ShapedLine, stop: Pixels) {
-    if let Some(layout) = expanded_layout(line, &line.text, stop) {
+/// `origin` is how far `line` starts from the start of its buffer line, which
+/// is where the stops are counted from.
+pub(crate) fn expand_tabs(line: &mut ShapedLine, origin: Pixels, stop: Pixels) {
+    if let Some(layout) = expanded_layout(line, &line.text, origin, stop) {
         **line = Arc::new(layout);
     }
 }
 
-/// The width of `layout` (shaped from `text`) once its tabs are expanded.
-pub(crate) fn expanded_width(layout: &LineLayout, text: &str, stop: Pixels) -> Pixels {
+/// The width of `layout` (shaped from `text`, starting at `origin`) once its
+/// tabs are expanded.
+pub(crate) fn expanded_width(
+    layout: &LineLayout,
+    text: &str,
+    origin: Pixels,
+    stop: Pixels,
+) -> Pixels {
     if stop <= px(0.) {
         return layout.width;
     }
 
     layout.width
-        + tab_shifts(layout, text, stop)
+        + tab_shifts(layout, text, origin, stop)
             .last()
             .map_or(px(0.), |(_, shift)| shift)
 }
@@ -47,6 +70,7 @@ pub(crate) fn expanded_width(layout: &LineLayout, text: &str, stop: Pixels) -> P
 fn tab_shifts<'a>(
     layout: &'a LineLayout,
     text: &'a str,
+    origin: Pixels,
     stop: Pixels,
 ) -> impl Iterator<Item = (usize, Pixels)> + 'a {
     let mut glyphs = layout.runs.iter().flat_map(|run| &run.glyphs).peekable();
@@ -62,23 +86,37 @@ fn tab_shifts<'a>(
     // Keep the cumulative shift in double precision. Rounding it to Pixels
     // after every tab can put a stop just below its boundary, making the next
     // tab land on that same stop instead of advancing.
+    let origin = f64::from(f32::from(origin));
     let stop = f64::from(f32::from(stop));
+    let slack = f64::from(f32::from(STOP_SLACK));
     text.match_indices('\t').scan(0_f64, move |shift, (ix, _)| {
-        let start = f64::from(f32::from(x_for_index(ix))) + *shift;
+        let start = origin + f64::from(f32::from(x_for_index(ix))) + *shift;
         let end = f64::from(f32::from(x_for_index(ix + 1)));
-        let next_stop = stop * ((start / stop).floor() + 1.);
-        *shift = next_stop - end;
+        // A tab reaches the next stop counted from the start of its buffer
+        // line. Positions are sums of glyph widths, so one that should land
+        // on a stop can fall a hair short of it; count that hair as on the
+        // stop, the way measuring does.
+        let next_stop = stop * (((start + slack) / stop).floor() + 1.);
+        // `end` is relative to the row; the stop is relative to the buffer
+        // line, so the shift drops the row's origin.
+        *shift = next_stop - end - origin;
         Some((ix, px(*shift as f32)))
     })
 }
 
-/// `layout` with its tabs widened, or `None` when it has none to widen.
-fn expanded_layout(layout: &LineLayout, text: &str, stop: Pixels) -> Option<LineLayout> {
+/// `layout` (shaped from `text`, starting at `origin`) with its tabs widened,
+/// or `None` when it has none to widen.
+fn expanded_layout(
+    layout: &LineLayout,
+    text: &str,
+    origin: Pixels,
+    stop: Pixels,
+) -> Option<LineLayout> {
     if stop <= px(0.) || !text.contains('\t') {
         return None;
     }
 
-    let shifts: Vec<_> = tab_shifts(layout, text, stop).collect();
+    let shifts: Vec<_> = tab_shifts(layout, text, origin, stop).collect();
     let shift = shifts.last().map_or(px(0.), |(_, shift)| *shift);
 
     let shift_after = |index: usize| {
@@ -162,13 +200,13 @@ mod tests {
 
     #[test]
     fn leaves_lines_without_tabs_alone() {
-        assert!(expanded_layout(&layout("abc", 10., 0.), "abc", px(40.)).is_none());
+        assert!(expanded_layout(&layout("abc", 10., 0.), "abc", px(0.), px(40.)).is_none());
     }
 
     #[test]
     fn zero_width_tabs_reach_the_next_stop() {
         let text = "\t\tx";
-        let expanded = expanded_layout(&layout(text, 10., 0.), text, px(40.)).unwrap();
+        let expanded = expanded_layout(&layout(text, 10., 0.), text, px(0.), px(40.)).unwrap();
         assert_eq!(xs(&expanded), vec![0., 40., 80.]);
         assert_eq!(expanded.width, px(90.));
     }
@@ -176,14 +214,14 @@ mod tests {
     #[test]
     fn a_tab_after_text_only_fills_up_to_the_stop() {
         let text = "ab\tc";
-        let expanded = expanded_layout(&layout(text, 10., 0.), text, px(40.)).unwrap();
+        let expanded = expanded_layout(&layout(text, 10., 0.), text, px(0.), px(40.)).unwrap();
         assert_eq!(xs(&expanded), vec![0., 10., 20., 40.]);
     }
 
     #[test]
     fn a_tab_on_a_stop_takes_a_whole_stop() {
         let text = "abcd\te";
-        let expanded = expanded_layout(&layout(text, 10., 0.), text, px(40.)).unwrap();
+        let expanded = expanded_layout(&layout(text, 10., 0.), text, px(0.), px(40.)).unwrap();
         assert_eq!(xs(&expanded)[5], 80.);
     }
 
@@ -193,7 +231,7 @@ mod tests {
         for stop in [14.4, 16.8, 28.8, 33.6] {
             for tab_advance in [0., 28.] {
                 let shaped = layout(&text, 10., tab_advance);
-                let expanded = expanded_layout(&shaped, &text, px(stop)).unwrap();
+                let expanded = expanded_layout(&shaped, &text, px(0.), px(stop)).unwrap();
                 for (index, glyph) in expanded.runs[0].glyphs.iter().enumerate() {
                     let expected = stop * index as f32;
                     assert!(
@@ -202,7 +240,10 @@ mod tests {
                         glyph.position.x,
                     );
                 }
-                assert_eq!(expanded_width(&shaped, &text, px(stop)), expanded.width);
+                assert_eq!(
+                    expanded_width(&shaped, &text, px(0.), px(stop)),
+                    expanded.width
+                );
             }
         }
     }
@@ -210,16 +251,57 @@ mod tests {
     #[test]
     fn shaper_widths_for_tabs_are_replaced() {
         let text = "\tx";
-        let expanded = expanded_layout(&layout(text, 10., 28.), text, px(40.)).unwrap();
+        let expanded = expanded_layout(&layout(text, 10., 28.), text, px(0.), px(40.)).unwrap();
         assert_eq!(xs(&expanded), vec![0., 40.]);
         assert_eq!(expanded.width, px(50.));
+    }
+
+    #[test]
+    fn a_tab_reaches_the_next_stop() {
+        let tab = px(16.);
+        assert_eq!(tab_advance(px(0.), tab), px(16.));
+        assert_eq!(tab_advance(px(4.), tab), px(12.));
+        assert_eq!(tab_advance(px(16.), tab), px(16.));
+        assert_eq!(tab_advance(px(30.), tab), px(2.));
+    }
+
+    #[test]
+    fn a_tab_a_hair_short_of_a_stop_starts_from_it() {
+        let tab = px(16.);
+        let advance = tab_advance(px(15.999), tab);
+        assert!((advance - px(16.001)).abs() < px(0.0001), "{advance:?}");
+    }
+
+    #[test]
+    fn a_wrapped_row_keeps_the_stops_of_its_line() {
+        // The tab of "ab\tc" ends on the second stop. A row starting twenty
+        // pixels into that line puts its own tab on the same stop, twenty
+        // pixels into the row.
+        let text = "ab\tc";
+        let line = expanded_layout(&layout(text, 10., 0.), text, px(0.), px(40.)).unwrap();
+        let row = expanded_layout(&layout("\tc", 10., 0.), "\tc", px(20.), px(40.)).unwrap();
+        assert_eq!(xs(&line)[3], 40.);
+        assert_eq!(xs(&row)[1], 20.);
+        assert_eq!(row.width, px(30.));
+    }
+
+    #[test]
+    fn a_tab_a_hair_short_of_a_stop_takes_a_whole_stop() {
+        // Glyph widths sum in float, so a tab that should start on a stop can
+        // start a hair short of it. It still moves past the stop, the way
+        // measuring counts it.
+        let text = "ab\t";
+        let shaped = layout(text, 19.9995, 0.);
+        let expanded = expanded_layout(&shaped, text, px(0.), px(40.)).unwrap();
+        let width = expanded.width;
+        assert!((f32::from(width) - 80.).abs() < 0.001, "{width:?}");
     }
 
     #[test]
     fn a_trailing_tab_widens_the_line() {
         let text = "a\t";
         assert_eq!(
-            expanded_width(&layout(text, 10., 0.), text, px(40.)),
+            expanded_width(&layout(text, 10., 0.), text, px(0.), px(40.)),
             px(40.)
         );
     }
@@ -234,7 +316,7 @@ mod tests {
             glyphs: remaining,
         });
 
-        let expanded = expanded_layout(&shaped, text, px(40.)).unwrap();
+        let expanded = expanded_layout(&shaped, text, px(0.), px(40.)).unwrap();
         let positions: Vec<_> = expanded
             .runs
             .iter()
@@ -243,8 +325,11 @@ mod tests {
             .collect();
         assert_eq!(positions, vec![0., 10., 40., 50., 80., 120., 130.]);
         assert_eq!(expanded.width, px(160.));
-        assert_eq!(expanded_width(&shaped, text, px(40.)), expanded.width);
-        assert_eq!(expanded_width(&shaped, text, px(0.)), shaped.width);
+        assert_eq!(
+            expanded_width(&shaped, text, px(0.), px(40.)),
+            expanded.width
+        );
+        assert_eq!(expanded_width(&shaped, text, px(0.), px(0.)), shaped.width);
     }
 
     #[test]
@@ -253,10 +338,13 @@ mod tests {
         let text = "\tx".repeat(count);
         let shaped = layout(&text, 10., 0.);
         let expected_width = px(count as f32 * 40. + 10.);
-        let expanded = expanded_layout(&shaped, &text, px(40.)).unwrap();
+        let expanded = expanded_layout(&shaped, &text, px(0.), px(40.)).unwrap();
 
         assert_eq!(expanded.width, expected_width);
-        assert_eq!(expanded_width(&shaped, &text, px(40.)), expected_width);
+        assert_eq!(
+            expanded_width(&shaped, &text, px(0.), px(40.)),
+            expected_width
+        );
         for (ix, glyphs) in expanded.runs[0].glyphs.chunks_exact(2).enumerate() {
             let tab_start = if ix == 0 { 0. } else { ix as f32 * 40. + 10. };
             assert_eq!(glyphs[0].position.x, px(tab_start));
