@@ -134,7 +134,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             .display_row_to_wrap_row(target_display_row)
             .unwrap_or(display_point.row);
 
-        display_point.row = target_wrap_row;
+        display_point.row = self
+            .display_map
+            .skip_filler(target_wrap_row, move_lines > 0);
         display_point.column = 0;
         let mut new_offset = self.display_map.wrap_display_point_to_offset(display_point);
 

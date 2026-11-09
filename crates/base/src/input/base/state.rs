@@ -42,7 +42,8 @@ use crate::input::blink_cursor::CURSOR_WIDTH;
 use crate::input::movement::MoveDirection;
 use crate::input::rope_ext::{next_grapheme_boundary, previous_grapheme_boundary};
 use crate::input::{
-    InputEdit, InputExtras as _, Position, RopeExt as _, element::RIGHT_MARGIN, layout::LastLayout,
+    FillerLook, InputEdit, InputExtras as _, Position, RopeExt as _, element::RIGHT_MARGIN,
+    layout::LastLayout,
 };
 use crate::overscroll::Overscroll;
 use crate::{AutoScroll, StepAction, TestSupportExt as _};
@@ -138,9 +139,20 @@ actions!(
 #[derive(Clone)]
 pub enum InputEvent {
     Change,
-    PressEnter { secondary: bool, shift: bool },
+    PressEnter {
+        secondary: bool,
+        shift: bool,
+    },
     Focus,
     Blur,
+    /// Every line was wrapped again, because the wrap width, the font or the
+    /// wrapping indent changed, so a line may now take a different number of
+    /// rows. The first layout counts. An edit reports its own rows through
+    /// [`InputEvent::Change`].
+    ///
+    /// Emitted while the frame that shows the new wrapping is laid out, so a
+    /// change made in answer, such as new filler, shows in the next frame.
+    Rewrap,
 }
 
 /// An immutable batch of text edits emitted for one input change.
@@ -541,6 +553,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
     pub(super) scrollbar_visible: bool,
+    /// See [`Self::filler_look`].
+    pub(crate) filler_look: FillerLook,
     /// Overview ruler marks in display rows, kept between frames.
     pub(super) overview_ruler_rows: std::cell::RefCell<OverviewRulerRows>,
     /// The widest measured unwrapped line width and what it was measured for.
@@ -1043,6 +1057,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             scroll_size: gpui::size(px(0.), px(0.)),
             editor_scrollbar_snapshot: Cell::new(None),
             scrollbar_visible: true,
+            filler_look: FillerLook::default(),
             overview_ruler_rows: Default::default(),
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
@@ -3781,7 +3796,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         //
         // - included the input padding.
         // - included the scroll offset.
-        let inner_position = position - bounds.origin - point(line_number_width, px(0.));
+        let mut inner_position = position - bounds.origin - point(line_number_width, px(0.));
+        // A point on filler stands for the text row nearest to it.
+        let display_row = (inner_position.y / line_height).floor().max(0.) as usize;
+        if let Some(row) = self.display_map.nearest_text_row(display_row) {
+            inner_position.y = line_height * (row as f32 + 0.5);
+        }
 
         let mut y_offset = last_layout.visible_top;
         // Position relative to the last line walked, kept for a pointer that ends up
@@ -3838,7 +3858,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .zip(last_line_pos)
             .zip(last_layout.visible_line_byte_offsets.last())
             .map(|((line_layout, pos), line_start)| {
-                let last_row_top = (line_layout.size(line_height).height - line_height).max(px(0.));
+                let last_row_top = line_height * line_layout.wrapped_lines.len().saturating_sub(1);
                 let pos = point(pos.x, last_row_top);
                 (
                     self.resolve_index(line_start + line_layout.len()),
