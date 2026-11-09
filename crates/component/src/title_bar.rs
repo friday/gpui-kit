@@ -327,6 +327,7 @@ impl RenderOnce for TitleBar {
         let is_macos = cfg!(target_os = "macos");
 
         let state = window.use_state(cx, |_, _| TitleBarState { should_move: false });
+        let corners = crate::window_corner_radii(window);
 
         div().flex_shrink_0().child(
             div()
@@ -343,6 +344,8 @@ impl RenderOnce for TitleBar {
                     cx.theme().title_bar,
                     cx.theme().background,
                 ))
+                .rounded_tl(corners.top_left)
+                .rounded_tr(corners.top_right)
                 .refine_style(&self.style)
                 .when(is_linux, |this| {
                     this.on_double_click(|_, window, _| window.zoom_window())
