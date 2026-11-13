@@ -1303,14 +1303,14 @@ impl PopupMenu {
         };
 
         let selected = self.selected_index == Some(ix);
-        const EDGE_PADDING: Pixels = px(4.);
         const INNER_PADDING: Pixels = px(8.);
+        let (padding, default_height) = (cx.theme().menu.padding, cx.theme().menu.item_height);
 
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
 
         let (item_height, radius) = match self.size {
             Size::Small => (px(20.), options.radius.half()),
-            _ => (px(26.), options.radius),
+            _ => (default_height, options.radius),
         };
 
         let this = MenuItemElement::new(ix)
@@ -1526,7 +1526,7 @@ impl PopupMenu {
                                         .left(left)
                                         .child(menu.clone()),
                                 )
-                                .snap_to_window_with_margin(Edges::all(EDGE_PADDING)),
+                                .snap_to_window_with_margin(Edges::all(padding)),
                         )
                     })
                 }),
@@ -1535,13 +1535,19 @@ impl PopupMenu {
 }
 
 /// `element` drawn as the line a separator draws across the menu, out through
-/// its padding to its edges. A section heading draws the same line above it.
+/// its padding to its edges unless separators are inset. A section heading
+/// draws the same line above it.
 fn separator_line<E: Styled>(element: E, cx: &App) -> E {
-    element
+    let menu = &cx.theme().menu;
+    let element = element
         .my_0p5()
-        .mx_neg_1()
         .border_b(px(2.))
-        .border_color(cx.theme().border)
+        .border_color(cx.theme().border);
+    if menu.inset_separators {
+        element
+    } else {
+        element.mx(-menu.padding)
+    }
 }
 
 impl FluentBuilder for PopupMenu {}
@@ -1596,7 +1602,7 @@ impl Render for PopupMenu {
         let options = RenderOptions {
             has_left_icon,
             check_side: self.check_side,
-            radius: cx.theme().radius.min(px(8.)),
+            radius: cx.theme().menu.resolved_item_radius(cx),
         };
 
         v_flex()
@@ -1613,13 +1619,14 @@ impl Render for PopupMenu {
             .on_action(cx.listener(Self::dismiss))
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
             .popover_style(cx)
+            .rounded(cx.theme().menu.resolved_radius(cx))
             .text_color(cx.theme().popover_foreground)
             .relative()
             .occlude()
             .child(
                 v_flex()
                     .id("items")
-                    .p_1()
+                    .p(cx.theme().menu.padding)
                     .gap_y_0p5()
                     .min_w(rems(8.))
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
@@ -1754,6 +1761,42 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(builds.get() > 0, "the disabled item's tooltip is built");
+    }
+
+    /// Where a 20px tall item's content lands in a menu drawn at the window's
+    /// corner, under `settings`.
+    fn content_origin(
+        cx: &mut gpui::TestAppContext,
+        settings: impl FnOnce(&mut crate::menu::MenuSettings),
+    ) -> Point<Pixels> {
+        cx.update(crate::init);
+        cx.update(|cx| settings(&mut crate::Theme::global_mut(cx).menu));
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            PopupMenu::new(cx).item(PopupMenuItem::element(|_, _| {
+                div()
+                    .debug_selector(|| "menu-content".into())
+                    .w(px(100.))
+                    .h(px(20.))
+            }))
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.debug_bounds("menu-content").unwrap().origin
+    }
+
+    #[gpui::test]
+    fn a_menu_keeps_the_kit_sizes_by_default(cx: &mut gpui::TestAppContext) {
+        // 4px of padding and 8px inside the item, then centred in 26px.
+        assert_eq!(content_origin(cx, |_| {}), gpui::point(px(12.), px(7.)));
+    }
+
+    #[gpui::test]
+    fn a_menu_takes_its_padding_and_item_height_from_the_theme(cx: &mut gpui::TestAppContext) {
+        let origin = content_origin(cx, |menu| {
+            menu.padding = px(10.);
+            menu.item_height = px(40.);
+        });
+        // 10px of padding and 8px inside the item, then centred in 40px.
+        assert_eq!(origin, gpui::point(px(18.), px(20.)));
     }
 
     #[gpui::test]

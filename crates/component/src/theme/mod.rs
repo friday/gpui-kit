@@ -1,6 +1,6 @@
 use crate::{
-    highlighter::HighlightTheme, list::ListSettings, notification::NotificationSettings,
-    scroll::ScrollbarMode, sheet::SheetSettings,
+    highlighter::HighlightTheme, list::ListSettings, menu::MenuSettings,
+    notification::NotificationSettings, scroll::ScrollbarMode, sheet::SheetSettings,
 };
 use gpui::{
     App, Global, Hsla, IsZero as _, Pixels, SharedString, Window, WindowAppearance,
@@ -210,6 +210,9 @@ pub struct Theme {
     pub list: ListSettings,
     /// The sheet settings.
     pub sheet: SheetSettings,
+    /// How popup menus are sized and shaped.
+    #[serde(default)]
+    pub menu: MenuSettings,
     /// Semantic motion policy for styled components.
     #[serde(skip)]
     pub motion: MotionTokens,
@@ -790,6 +793,7 @@ impl From<&ThemeColor> for Theme {
             dark_theme: Rc::new(ThemeConfig::default()),
             highlight_theme: HighlightTheme::default_light(),
             sheet: SheetSettings::default(),
+            menu: MenuSettings::default(),
             motion: MotionTokens::default(),
             cursor_blink: gpui_base::input::CursorBlink::default(),
         }
