@@ -4,6 +4,7 @@ mod app_menu_bar;
 mod context_menu;
 mod dropdown_menu;
 mod menu_item;
+mod menu_settings;
 mod popup_menu;
 mod trigger_focus;
 
@@ -11,6 +12,7 @@ pub use app_menu_bar::AppMenuBar;
 pub use context_menu::{ContextMenu, ContextMenuExt, ContextMenuState};
 pub use dropdown_menu::DropdownMenu;
 pub(crate) use menu_item::MenuItemElement;
+pub use menu_settings::MenuSettings;
 pub use popup_menu::{PopupMenu, PopupMenuItem};
 pub use trigger_focus::TriggerFocus;
 
