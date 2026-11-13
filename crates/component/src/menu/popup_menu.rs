@@ -437,11 +437,12 @@ impl PopupMenu {
 
     /// Set the focus handle on the trigger's dispatch path that shortcut hints
     /// resolve against, without changing focus or where actions are dispatched.
-    pub(crate) fn set_trigger_focus(
-        &mut self,
-        handle: Option<FocusHandle>,
-        cx: &mut Context<Self>,
-    ) {
+    ///
+    /// A menu the caller shows in a popover of its own should pass the handle
+    /// from a [`TriggerFocus`](super::TriggerFocus) wrapping that popover, so
+    /// its shortcut hints show on the frame it opens: GPUI resolves a handle
+    /// against the previously rendered frame, where only the trigger was.
+    pub fn set_trigger_focus(&mut self, handle: Option<FocusHandle>, cx: &mut Context<Self>) {
         self.trigger_focus_handle = handle.clone();
 
         for item in &self.menu_items {

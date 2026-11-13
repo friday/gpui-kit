@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
 use gpui::{
-    Anchor, AnyElement, App, Context, DismissEvent, Element, ElementId, Entity, FocusHandle,
-    Focusable, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
-    RenderOnce, SharedString, Styled, Window, prelude::FluentBuilder,
+    Anchor, App, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, RenderOnce, SharedString, Styled, Window,
+    prelude::FluentBuilder,
 };
 
-use crate::{Selectable, button::Button, menu::PopupMenu, popover::Popover};
+use crate::{Selectable, button::Button, menu::PopupMenu, menu::TriggerFocus, popover::Popover};
 
 /// A dropdown menu trait for buttons and other interactive elements
 pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement + 'static {
@@ -170,116 +170,6 @@ where
 
                 menu.clone()
             })
-    }
-}
-
-type TriggerFocusBuild = Box<dyn FnOnce(FocusHandle, &mut Window, &mut App) -> AnyElement>;
-
-/// Registers a focus handle on the trigger's dispatch node without ever
-/// focusing it, so the menu opened from the trigger can resolve its shortcut
-/// hints against the trigger's key contexts on the frame it opens. GPUI looks
-/// a handle up in the previously rendered frame; the trigger was in it when
-/// the menu was not yet.
-struct TriggerFocus {
-    id: ElementId,
-    build: Option<TriggerFocusBuild>,
-}
-
-#[derive(Default)]
-struct TriggerFocusState {
-    focus_handle: Option<FocusHandle>,
-}
-
-struct TriggerFocusFrame {
-    focus_handle: FocusHandle,
-    child: AnyElement,
-}
-
-impl TriggerFocus {
-    fn new(
-        id: ElementId,
-        build: impl FnOnce(FocusHandle, &mut Window, &mut App) -> AnyElement + 'static,
-    ) -> Self {
-        Self {
-            id,
-            build: Some(Box::new(build)),
-        }
-    }
-}
-
-impl IntoElement for TriggerFocus {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for TriggerFocus {
-    type RequestLayoutState = TriggerFocusFrame;
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let focus_handle =
-            window.with_optional_element_state::<TriggerFocusState, _>(id, |state, _| {
-                let mut state = state.flatten().unwrap_or_default();
-                let focus_handle = state
-                    .focus_handle
-                    .get_or_insert_with(|| cx.focus_handle())
-                    .clone();
-                (focus_handle, Some(state))
-            });
-        let build = self.build.take().expect("TriggerFocus is laid out once");
-        let mut child = build(focus_handle.clone(), window, cx);
-        let layout_id = child.request_layout(window, cx);
-
-        (
-            layout_id,
-            TriggerFocusFrame {
-                focus_handle,
-                child,
-            },
-        )
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: gpui::Bounds<gpui::Pixels>,
-        frame: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.set_focus_handle(&frame.focus_handle, cx);
-        frame.child.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: gpui::Bounds<gpui::Pixels>,
-        frame: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        frame.child.paint(window, cx);
     }
 }
 
