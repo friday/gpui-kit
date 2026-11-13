@@ -3,7 +3,9 @@ use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
 use crate::actions::{SelectLeft, SelectRight};
 use crate::menu::menu_item::MenuItemElement;
 use crate::scroll::ScrollableElement;
-use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
+use crate::{
+    ActiveTheme, ElementExt, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
+};
 use crate::{Side, Size, kbd::Kbd};
 use gpui::{
     Action, Anchor, AnyElement, App, AppContext, Bounds, Context, DismissEvent, Edges, Entity,
@@ -309,6 +311,9 @@ pub struct PopupMenu {
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
     external_link_icon: bool,
+    /// Whether each label heads the items under it, rather than drawing as a
+    /// greyed out item.
+    section_headings: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
@@ -353,6 +358,7 @@ impl PopupMenu {
             scrollable: false,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
+            section_headings: false,
             size: Size::default(),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: gpui_base::POPUP_PRIORITY,
@@ -465,6 +471,16 @@ impl PopupMenu {
     /// Set the menu to show external link icon, default is true.
     pub fn external_link_icon(mut self, visible: bool) -> Self {
         self.external_link_icon = visible;
+        self
+    }
+
+    /// Draw each label as the heading of the group of items under it: small,
+    /// semibold and dimmed, lined up with the items' labels, with a separator
+    /// above it unless it opens the menu or one is there already.
+    ///
+    /// Off by default, which draws a label as a greyed out item.
+    pub fn section_headings(mut self, section_headings: bool) -> Self {
+        self.section_headings = section_headings;
         self
     }
 
@@ -1321,14 +1337,27 @@ impl PopupMenu {
             );
 
         match item {
-            PopupMenuItem::Separator => this
-                .h_auto()
-                .p_0()
-                .my_0p5()
-                .mx_neg_1()
-                .border_b(px(2.))
-                .border_color(cx.theme().border)
-                .disabled(true),
+            PopupMenuItem::Separator => separator_line(this.h_auto().p_0(), cx).disabled(true),
+            PopupMenuItem::Label(label) if self.section_headings => this
+                .disabled(true)
+                .cursor_default()
+                .pt_1p5()
+                .pb_0p5()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_x_1()
+                        // An empty icon slot, so the heading lines up with the
+                        // items' labels.
+                        .children(Self::render_icon(has_left_icon, false, None, window, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(label.clone()),
+                        ),
+                ),
             PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
                 h_flex()
                     .cursor_default()
@@ -1485,6 +1514,16 @@ impl PopupMenu {
     }
 }
 
+/// `element` drawn as the line a separator draws across the menu, out through
+/// its padding to its edges. A section heading draws the same line above it.
+fn separator_line<E: Styled>(element: E, cx: &App) -> E {
+    element
+        .my_0p5()
+        .mx_neg_1()
+        .border_b(px(2.))
+        .border_color(cx.theme().border)
+}
+
 impl FluentBuilder for PopupMenu {}
 impl EventEmitter<DismissEvent> for PopupMenu {}
 impl Focusable for PopupMenu {
@@ -1578,7 +1617,19 @@ impl Render for PopupMenu {
                             .enumerate()
                             // Ignore last separator
                             .filter(|(ix, item)| !(*ix + 1 == items_count && item.is_separator()))
-                            .map(|(ix, item)| self.render_item(ix, item, options, window, cx)),
+                            .flat_map(|(ix, item)| {
+                                let opens_group = self.section_headings
+                                    && matches!(item, PopupMenuItem::Label(_))
+                                    && ix > 0
+                                    && !self.menu_items[ix - 1].is_separator();
+                                opens_group
+                                    .then(|| separator_line(div(), cx).into_any_element())
+                                    .into_iter()
+                                    .chain(Some(
+                                        self.render_item(ix, item, options, window, cx)
+                                            .into_any_element(),
+                                    ))
+                            }),
                     )
                     .on_prepaint(move |bounds, _, cx| {
                         view.update(cx, |menu, cx| {
