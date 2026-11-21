@@ -735,7 +735,11 @@ impl RenderOnce for Dialog {
                         self.base
                             .take()
                             .expect("Dialog base host is always present")
-                            .layer(self.id, is_topmost)
+                            // One band above the sheet: the sheet takes the
+                            // first dialog band and the open dialogs number
+                            // from the next, so a dialog paints over the
+                            // sheet and over any popup it left open.
+                            .layer(self.layer_ix + 1, is_topmost)
                             .focus_handle(self.focus_handle.clone())
                             .close_on_escape(self.props.keyboard && !closing)
                             .close_on_backdrop_press(self.props.overlay_closable && !closing)

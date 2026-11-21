@@ -186,7 +186,7 @@ pub use select::Select;
 pub use selectable_text::SelectableText;
 pub use sheet::Sheet;
 pub use slider::{Slider, SliderIndicator, SliderThumb, SliderTrack};
-pub use stacking::{ABOVE_LAYERS_PRIORITY, deferred_popup, in_top_layer};
+pub use stacking::{ABOVE_LAYERS_PRIORITY, deferred_popup, deferred_sheet, in_top_layer};
 pub use state_style::StateStyle;
 #[cfg(any(feature = "inspector", debug_assertions))]
 pub use styled::styled_ext_reflection_methods;
