@@ -12,10 +12,12 @@ use crate::{
 use gpui::{
     App, AppContext, Bounds, Context, DefiniteLength, DispatchPhase, ElementId, Entity,
     FocusHandle, GlobalElementId, InteractiveElement, IntoElement, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, RenderOnce, Styled, WeakFocusHandle, Window, canvas, div,
-    prelude::FluentBuilder as _,
+    ParentElement as _, Pixels, Render, RenderOnce, Styled, WeakFocusHandle, Window, canvas,
+    deferred, div, prelude::FluentBuilder as _,
 };
-use gpui_base::{TextSelection, TextSelectionScopeId, motion::Presence};
+use gpui_base::{
+    ABOVE_LAYERS_PRIORITY, TextSelection, TextSelectionScopeId, deferred_sheet, motion::Presence,
+};
 use std::{any::TypeId, cell::Cell, rc::Rc};
 
 pub(crate) fn init(cx: &mut App) {
@@ -186,23 +188,31 @@ impl WindowState {
         // Keep toasts out from under the system bars and the on-screen keyboard.
         let safe_insets = window_border::window_safe_insets(window);
 
+        // The one layer that is never occluded: a toast reports the outcome
+        // of the action the user just took, and an open dropdown or dialog is
+        // exactly the situation where that outcome matters most. The stacking
+        // module reserves the band above every dialog for it, and a popup
+        // opened in a dialog stays a band below.
         Some(
-            div()
-                .absolute()
-                .top(safe_insets.top)
-                .right(safe_insets.right)
-                .bottom(safe_insets.bottom)
-                .left(safe_insets.left)
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .when_some(mt, |this, offset| this.mt(offset))
-                        .when_some(mr, |this, offset| this.mr(offset))
-                        .when_some(mb, |this, offset| this.mb(offset))
-                        .when_some(ml, |this, offset| this.ml(offset))
-                        .child(root.read(cx).notification.clone()),
-                ),
+            deferred(
+                div()
+                    .absolute()
+                    .top(safe_insets.top)
+                    .right(safe_insets.right)
+                    .bottom(safe_insets.bottom)
+                    .left(safe_insets.left)
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .when_some(mt, |this, offset| this.mt(offset))
+                            .when_some(mr, |this, offset| this.mr(offset))
+                            .when_some(mb, |this, offset| this.mb(offset))
+                            .when_some(ml, |this, offset| this.ml(offset))
+                            .child(root.read(cx).notification.clone()),
+                    ),
+            )
+            .with_priority(ABOVE_LAYERS_PRIORITY),
         )
     }
 
@@ -220,12 +230,13 @@ impl WindowState {
 
             let size = sheet.size;
 
-            return Some(
-                div()
-                    .relative()
-                    .child(sheet)
-                    .on_prepaint(move |_, _, cx| root.update(cx, |r, _| r.sheet_size = Some(size))),
-            );
+            // The sheet is a place in the window, below every dialog: it
+            // defers at the first modal band, above whatever the application
+            // defers over its own content, and the open dialogs number their
+            // bands above it.
+            return Some(deferred_sheet(div().relative().child(sheet).on_prepaint(
+                move |_, _, cx| root.update(cx, |r, _| r.sheet_size = Some(size)),
+            )));
         }
 
         None
@@ -743,6 +754,12 @@ impl Render for WindowState {
             .absolute()
             .inset_0()
             .child(WindowStateLayers { root: cx.entity() })
+            // The overlays after the layers defer themselves: the touch
+            // selection and the fallback menu popups through the top layer,
+            // above every dialog, and the tooltip above every priority the
+            // window uses. The toasts, deferred inside the layers, sit above
+            // all of these, at the band the stacking module reserves for
+            // what must never be covered.
             .child(self.touch_selection_overlay.clone())
             .child(self.tooltip_overlay.clone())
             .children(self.tooltip_press_listener(cx))
@@ -755,6 +772,15 @@ const ROOT_MISSING: &str =
 
 /// Window-level layers, always mounted once after the application content.
 /// Child view caching does not affect their ownership or rendering.
+///
+/// Each layer paints in GPUI's second pass: an application defers elements
+/// over its own content (a pane held back so its caret scrolls into view, a
+/// pill, a dragged row), and a layer in the first pass would sit under
+/// whatever of those is on screen. The sheet defers at the first modal
+/// band, the open dialogs one band each above it, and the toasts above
+/// every band, so the layers keep the order this mount draws them in, and
+/// a popup opened inside a layer paints one above it, under the layers
+/// above.
 #[derive(IntoElement)]
 struct WindowStateLayers {
     root: Entity<WindowState>,
@@ -770,5 +796,187 @@ impl RenderOnce for WindowStateLayers {
             .children(WindowState::sheet_layer(root.clone(), window, cx))
             .children(WindowState::dialog_layer(&root, window, cx))
             .children(WindowState::notification_layer(&root, window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Root, WindowExt as _, notification::Notification};
+    use gpui::{
+        Modifiers, StatefulInteractiveElement as _, TestAppContext, VisualTestContext, deferred,
+        point, px, size,
+    };
+    use gpui_base::deferred_popup;
+    use std::cell::RefCell;
+
+    use super::*;
+
+    type Painted = Rc<RefCell<Vec<&'static str>>>;
+
+    /// A surface that notes its name as it paints.
+    fn mark(name: &'static str, painted: &Painted) -> impl IntoElement + use<> {
+        let painted = painted.clone();
+        div().size(px(20.)).child(
+            canvas(
+                |_, _, _| {},
+                move |_, _, _, _| painted.borrow_mut().push(name),
+            )
+            .size_full(),
+        )
+    }
+
+    /// A window whose content defers one element over itself, as an
+    /// application defers a pane held back or a pill.
+    fn window_with_deferred_content<'a>(
+        cx: &'a mut TestAppContext,
+        painted: &Painted,
+    ) -> &'a mut VisualTestContext {
+        cx.update(|cx| {
+            crate::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (_, window) = cx.add_window_view({
+            let painted = painted.clone();
+            move |window, cx| {
+                let view = cx.new(|_| OrderHarness { painted });
+                Root::new(view, window, cx)
+            }
+        });
+        window.simulate_resize(size(px(1000.), px(800.)));
+        window
+    }
+
+    struct OrderHarness {
+        painted: Painted,
+    }
+
+    impl Render for OrderHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let painted = self.painted.clone();
+            div()
+                .size_full()
+                .child(deferred(mark("app", &painted)).with_priority(1))
+        }
+    }
+
+    #[gpui::test]
+    fn the_layers_paint_over_what_the_app_defers(cx: &mut TestAppContext) {
+        let painted = Painted::default();
+        let window = window_with_deferred_content(cx, &painted);
+
+        window.update(|window, cx| {
+            let sheet_painted = painted.clone();
+            window.open_sheet(cx, move |sheet, _, _| {
+                sheet.title("Panel").child(mark("sheet", &sheet_painted))
+            });
+            let dialog_painted = painted.clone();
+            let popup_painted = painted.clone();
+            window.open_dialog(cx, move |dialog, _, _| {
+                dialog
+                    .title("Prune")
+                    .child(mark("dialog", &dialog_painted))
+                    .child(deferred_popup(mark("dialog popup", &popup_painted)))
+            });
+            let toast_painted = painted.clone();
+            window.push_notification(
+                Notification::new()
+                    .content(move |_, _, _| mark("toast", &toast_painted).into_any_element()),
+                cx,
+            );
+        });
+        window.run_until_parked();
+        // A frame for the layers to mount and one for the popup nested in
+        // the dialog, as in the stacking suite.
+        for _ in 0..3 {
+            painted.borrow_mut().clear();
+            window.update(|window, cx| window.draw(cx).clear(cx));
+        }
+
+        assert_eq!(
+            *painted.borrow(),
+            ["app", "sheet", "dialog", "dialog popup", "toast"]
+        );
+    }
+
+    /// A target an application defers over its whole content, taking every
+    /// click nothing above it takes first.
+    struct ClicksHarness {
+        clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for ClicksHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            deferred(
+                div()
+                    .id("app-target")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+            )
+            .with_priority(1)
+        }
+    }
+
+    #[gpui::test]
+    fn the_layers_take_the_clicks_over_a_deferred_target(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let clicks = Rc::new(Cell::new(0));
+        let counter = clicks.clone();
+        let (_, window) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|_| ClicksHarness { clicks: counter });
+            Root::new(view, window, cx)
+        });
+        window.simulate_resize(size(px(1000.), px(800.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The target takes a click where nothing covers it.
+        window.simulate_click(point(px(500.), px(700.)), Modifiers::default());
+        assert_eq!(clicks.get(), 1);
+
+        // A dialog takes the clicks where it covers the target.
+        window.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog.title("Prune").child("Prune these?")
+            })
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let surface = window.debug_bounds("dialog-0").unwrap().center();
+        window.simulate_click(surface, Modifiers::default());
+        assert_eq!(
+            clicks.get(),
+            1,
+            "the dialog took the click, not the target under it"
+        );
+
+        // And a toast takes them where it lands on the target.
+        window.update(|window, cx| {
+            window.push_notification(
+                Notification::new().content(|_, _, _| {
+                    div()
+                        .debug_selector(|| "toast-probe".to_string())
+                        .py_2()
+                        .px_3()
+                        .child("Pruned")
+                        .into_any_element()
+                }),
+                cx,
+            )
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let toast = window.debug_bounds("toast-probe").unwrap().center();
+        window.simulate_click(toast, Modifiers::default());
+        assert_eq!(
+            clicks.get(),
+            1,
+            "the toast took the click, not the target under it"
+        );
     }
 }

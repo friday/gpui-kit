@@ -1,11 +1,13 @@
 //! The paint order of a window's deferred surfaces.
 //!
 //! A window stacks in layers: the window itself, then one per open dialog,
-//! oldest first. Each layer owns a band of [`LAYER_STRIDE`] priorities. A
-//! dialog paints at the base of its band, and a popup paints one above the
-//! surface whose content drew it. So a popup opened from the window stays
-//! under every dialog, a dialog's own dropdown paints over that dialog and
-//! under the next one, and a submenu paints over its menu.
+//! oldest first. A root that defers its sheet mounts it at the first dialog
+//! band and numbers its open dialogs above it, as this kit's root does.
+//! Each layer owns a band of [`LAYER_STRIDE`] priorities. A dialog paints
+//! at the base of its band, and a popup paints one above the surface whose
+//! content drew it. So a popup opened from the window stays under every
+//! dialog, a dialog's own dropdown paints over that dialog and under the
+//! next one, and a submenu paints over its menu.
 //!
 //! The layer a popup belongs to is read as it prepaints, not as it renders,
 //! because a cached view renders in prepaint and a nested popup prepaints a
@@ -51,6 +53,21 @@ pub fn deferred_popup(child: impl IntoElement) -> impl IntoElement {
 /// Defers `child` as the dialog at `layer`, counted from the oldest open.
 pub(crate) fn deferred_dialog(layer: usize, child: impl IntoElement) -> impl IntoElement {
     DeferredSurface::new(Surface::Dialog(layer), child)
+}
+
+/// Defers `child` as the window's sheet: the first modal band above the
+/// application, under every dialog.
+///
+/// A root that defers its sheet mounts it here, above whatever the
+/// application defers over its own content (which stays in the window band
+/// below) and below the dialog bands, so a dialog raised over a sheet
+/// stays readable. A popup deferred inside the sheet paints one above it,
+/// still under every dialog. The band is the one a dialog at index zero
+/// takes, so the kit numbers its open dialogs above their sheet; a dialog
+/// an application mounts through the base host at that index ties with the
+/// sheet, and no window mixes the two.
+pub fn deferred_sheet(child: impl IntoElement) -> impl IntoElement {
+    DeferredSurface::new(Surface::Dialog(0), child)
 }
 
 /// Draws `child` as part of the top layer, so a popup deferred in it paints
