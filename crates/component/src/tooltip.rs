@@ -6,11 +6,9 @@ use std::{
 };
 
 use gpui::{
-    Action, AnyElement, AnyView, App, AppContext, AvailableSpace, Bounds, Context, ElementId,
-    FocusHandle, GlobalElementId, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    SharedString, Size,
+    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, FocusHandle,
+    GlobalElementId, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
-    size,
 };
 pub use gpui_base::TooltipDefaults;
 use gpui_base::{
@@ -19,8 +17,8 @@ use gpui_base::{
 };
 
 use crate::{
-    ActiveTheme, ElementExt as _, Placement, StyledExt,
-    animation::{EffectTransition, ease_in_out_cubic, ease_out_cubic},
+    ActiveTheme, Placement, StyledExt,
+    animation::{EffectTransition, ease_out_cubic},
     kbd::Kbd,
     text::Text,
 };
@@ -161,109 +159,33 @@ impl Render for Tooltip {
 
 /// Duration of the slide-down enter animation.
 const ENTER_DURATION: Duration = Duration::from_millis(150);
-/// Duration of the position-slide animation when switching tooltips.
-const SLIDE_DURATION: Duration = Duration::from_millis(200);
-
-#[derive(Default)]
-struct TooltipMotion {
-    drawn_size: Option<Size<Pixels>>,
-    switch_from: Option<(usize, Size<Pixels>)>,
-}
-
-impl TooltipMotion {
-    fn switch_from(&mut self, epoch: usize) -> Option<Size<Pixels>> {
-        match self.switch_from {
-            Some((switch_epoch, size)) if switch_epoch == epoch => Some(size),
-            _ => {
-                self.switch_from = self.drawn_size.map(|size| (epoch, size));
-                self.drawn_size
-            }
-        }
-    }
-}
 
 pub(crate) fn tooltip_renderer()
 -> impl Fn(AnyView, BaseTooltipTransition, &mut Window, &mut App) -> AnyElement + 'static {
-    let motion = Rc::new(RefCell::new(TooltipMotion::default()));
-    move |content_view, transition, window, cx| {
-        render_tooltip(content_view, transition, &motion, window, cx)
-    }
+    render_tooltip
 }
 
+/// A switch between two triggers takes the new content at once. Sliding the
+/// box across and resizing it to the new text reads as the label itself
+/// animating, which is worse than a plain swap for a tooltip.
 fn render_tooltip(
     content_view: AnyView,
     transition: BaseTooltipTransition,
-    motion: &Rc<RefCell<TooltipMotion>>,
-    window: &mut Window,
-    cx: &mut App,
+    _window: &mut Window,
+    _cx: &mut App,
 ) -> AnyElement {
-    let record_size = {
-        let motion = motion.clone();
-        move |bounds: Bounds<Pixels>, _: &mut Window, _: &mut App| {
-            motion.borrow_mut().drawn_size = Some(bounds.size);
-        }
-    };
-
     match transition {
-        BaseTooltipTransition::Switch {
-            epoch,
-            previous,
-            current,
-        } => {
-            let same_row = (current.origin.y - previous.origin.y).abs() < px(10.);
-            if !same_row {
-                return div()
-                    .child(content_view)
-                    .on_prepaint(record_size)
-                    .into_any_element();
-            }
-            let resize = motion
-                .borrow_mut()
-                .switch_from(epoch)
-                .map(|from| (from, natural_size(&content_view, window, cx)))
-                .filter(|(from, to)| from != to);
-            let dx = current.center().x - previous.center().x;
-            EffectTransition::new(SLIDE_DURATION)
-                .ease(ease_in_out_cubic)
-                .slide_x(-dx, px(0.))
-                .when_some(resize, |transition, (from, to)| {
-                    transition
-                        .width(from.width, to.width)
-                        .height(from.height, to.height)
-                })
-                .apply(
-                    div()
-                        .child(content_view)
-                        .when_some(resize, |this, (from, to)| {
-                            this.overflow_hidden()
-                                .when(from.height == to.height, |this| this.whitespace_nowrap())
-                        })
-                        .on_prepaint(record_size),
-                    ElementId::NamedInteger("tooltip-slide".into(), epoch as u64),
-                )
-                .into_any_element()
-        }
+        BaseTooltipTransition::Switch { .. } => div().child(content_view).into_any_element(),
         BaseTooltipTransition::Enter { epoch } => EffectTransition::new(ENTER_DURATION)
             .ease(ease_out_cubic)
             .slide_y(px(4.), px(0.))
             .fade(0.0, 1.0)
             .apply(
-                div().child(content_view).on_prepaint(record_size),
+                div().child(content_view),
                 ElementId::NamedInteger("tooltip-enter".into(), epoch as u64),
             )
             .into_any_element(),
     }
-}
-
-fn natural_size(content_view: &AnyView, window: &mut Window, cx: &mut App) -> Size<Pixels> {
-    div()
-        .child(content_view.clone())
-        .into_any_element()
-        .layout_as_root(
-            size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
-            window,
-            cx,
-        )
 }
 
 // ── Extension trait for managed tooltips ─────────────────────────────────────
@@ -480,7 +402,7 @@ mod tests {
         div, point, prelude::FluentBuilder as _, px,
     };
 
-    use super::{ManagedTooltipExt as _, SLIDE_DURATION};
+    use super::ManagedTooltipExt as _;
     use crate::Root;
 
     // Distinct scene markers let assertions observe retained tooltip output
@@ -1123,7 +1045,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn switching_tooltips_animates_the_width(cx: &mut TestAppContext) {
+    fn switching_tooltips_takes_the_new_width_at_once(cx: &mut TestAppContext) {
         cx.update(crate::init);
         let view = cx.new(|_| ShortAndLongTriggers);
         let window = cx.update(|cx| {
@@ -1142,16 +1064,13 @@ mod tests {
         cx.simulate_mouse_move(point(px(350.), px(25.)), None, Default::default());
         cx.run_until_parked();
         let start = painted_width(&mut cx, 1);
-        cx.executor().advance_clock(SLIDE_DURATION / 2);
-        let middle = painted_width(&mut cx, 1);
         wait(&mut cx);
         let long = painted_width(&mut cx, 1);
 
         assert!(short < long, "{short} < {long}");
-        assert_eq!(start, short, "the switch starts at the previous width");
-        assert!(
-            short < middle && middle < long,
-            "{short} < {middle} < {long}"
+        assert_eq!(
+            start, long,
+            "the switch takes the new width in the frame it lands on"
         );
     }
 
