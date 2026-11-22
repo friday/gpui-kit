@@ -1453,6 +1453,9 @@ impl PopupMenu {
                     h_flex()
                         .flex_row_dir(cx)
                         .flex_1()
+                        // Lets a custom row shrink to the menu's width, so text
+                        // it truncates is cut there instead of overflowing.
+                        .min_w_0()
                         .min_h(item_height)
                         .items_center()
                         .gap_x_1()
